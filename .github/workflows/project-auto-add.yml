@@ -101,52 +101,63 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Stage is an organization Issue Field surfaced in the Project.
+          # The Project fields endpoint exposes its numeric Issue Field ID.
           fields_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H "X-GitHub-Api-Version: ${API_VERSION}" \
             "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}/fields?per_page=100")"
 
           stage_field_id="$(jq -r '.[] | select(.name == "Stage") | .id' <<<"$fields_json" | head -n 1)"
-          backlog_option_id="$(jq -r '.[] | select(.name == "Stage") | .options[]? | select(.name.raw == "Backlog") | .id' <<<"$fields_json" | head -n 1)"
 
-          if [ -z "${stage_field_id:-}" ] || [ "$stage_field_id" = "null" ] || \
-             [ -z "${backlog_option_id:-}" ] || [ "$backlog_option_id" = "null" ]; then
-            echo '::error::Could not resolve Stage field and Backlog option from Mira Development.'
-            jq -r '.[] | [.id, .name, .data_type, ([.options[]?.name.raw] | join(","))] | @tsv' <<<"$fields_json"
+          if [ -z "${stage_field_id:-}" ] || [ "$stage_field_id" = "null" ]; then
+            echo '::error::Could not resolve Stage field from Mira Development.'
             exit 1
           fi
 
           untriaged_file="$(mktemp)"
 
-          gh api --paginate \
-            -H 'Accept: application/vnd.github+json' \
-            -H "X-GitHub-Api-Version: ${API_VERSION}" \
-            "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}/items?q=is%3Aissue+is%3Aopen+no%3Astage&fields=${stage_field_id}&per_page=100" \
-            --jq '.[] | [.id, (.content.html_url // .content.url // .item_url // "unknown")] | @tsv' \
-            > "$untriaged_file"
+          gh project item-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --limit 1000 \
+            --query 'is:issue is:open no:stage' \
+            --format json \
+            --jq '.items[].content.url // empty' \
+            | sort -u > "$untriaged_file"
 
           updated=0
           failed=0
 
-          while IFS=$'\t' read -r item_id issue_url; do
-            [ -n "${item_id:-}" ] || continue
+          while IFS= read -r issue_url; do
+            [ -n "${issue_url:-}" ] || continue
 
-            echo "Defaulting ${issue_url:-project-item-$item_id} to Stage=Backlog"
+            issue_path="${issue_url#https://github.com/}"
+            issue_owner="${issue_path%%/*}"
+            remainder="${issue_path#*/}"
+            issue_repo="${remainder%%/*}"
+            issue_number="${issue_url##*/}"
+
+            if [ "$issue_owner" != "$ORG" ] || ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+              echo "::error::Unexpected Issue URL from project: $issue_url"
+              failed=$((failed + 1))
+              continue
+            fi
+
+            echo "Defaulting $issue_url to Stage=Backlog"
 
             payload="$(jq -nc \
               --argjson field_id "$stage_field_id" \
-              --arg option_id "$backlog_option_id" \
-              '{fields:[{id:$field_id,value:$option_id}]}')"
+              '{issue_field_values:[{field_id:$field_id,value:"Backlog"}]}')"
 
             if gh api \
-              --method PATCH \
+              --method POST \
               -H 'Accept: application/vnd.github+json' \
               -H "X-GitHub-Api-Version: ${API_VERSION}" \
-              "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}/items/${item_id}" \
+              "/repos/${issue_owner}/${issue_repo}/issues/${issue_number}/issue-field-values" \
               --input - <<<"$payload" >/dev/null; then
               updated=$((updated + 1))
             else
-              echo "::error::Failed to set Stage=Backlog for ${issue_url:-project-item-$item_id}"
+              echo "::error::Failed to set Stage=Backlog for $issue_url"
               failed=$((failed + 1))
             fi
           done < "$untriaged_file"
