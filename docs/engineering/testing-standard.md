@@ -123,23 +123,51 @@ Docs      -> Node/Vitest-compatible package tests / build / preview smoke
 
 Do not migrate a healthy repository to another runner solely for Organization uniformity.
 
-## 4. Mira Cloud test profile
+## 4. Organization CI status contract
+
+Repositories should expose useful layer-specific CI jobs where practical, for example:
+
+```text
+T1 Unit
+T2 Contract
+T3 Runtime
+T4 E2E
+T5 Smoke
+```
+
+The exact set depends on the repository and the branch/promotion stage.
+
+Every repository that participates in automated merge/release gating should also expose one stable aggregate status named:
+
+```text
+Mira Gate
+```
+
+`Mira Gate` is the Organization-level decision surface. It succeeds only when every check required for the current branch/promotion stage has succeeded or has been explicitly classified as not applicable by repository policy.
+
+The aggregate must not hide failures or turn a skipped required check into success. Layer-specific jobs remain visible for diagnosis; `Mira Gate` exists so branch protection, Control Room, and other Organization projections can consume one stable semantic status without knowing whether a repository uses Jest, Vitest, XCTest, Gradle, Wrangler, or another runner.
+
+Where GitHub Actions is used, implement `Mira Gate` as a small final job with `needs` on the required jobs rather than duplicating tests. The aggregate job must use a job-level condition such as `if: ${{ always() }}` so it still executes after a dependency fails or is skipped, then explicitly inspect every required `needs.<job>.result`. A required result other than `success` must fail `Mira Gate` unless repository policy has explicitly classified that check as not applicable. Do not rely on GitHub's default skip behavior for aggregation.
+
+## 5. Mira Cloud test profile
 
 New TypeScript Cloudflare Worker services should default to:
 
 - Vitest 4.1+;
 - `@cloudflare/vitest-plugin`;
 - `wrangler types` as part of type verification;
-- local Worker-runtime tests using the repository's Wrangler configuration;
+- local Worker-runtime tests using a test configuration that mirrors the bindings under test;
 - D1/R2/KV/Workflow/DO bindings tested in the Workers runtime when the service depends on them;
 - outbound provider/API calls mocked at the network boundary for T1–T3;
 - real provider/network calls reserved for explicit preview/E2E smoke where needed.
 
 Cloud services should avoid treating Node-only mocks as sufficient evidence for Worker-runtime behavior.
 
+A production Wrangler configuration may include bindings that cannot be simulated locally (for example Workers AI). Ordinary T1–T3 CI must not acquire production/cloud credentials merely to start a local test runtime. Prefer a local test binding/mock for the unsupported boundary, while separately validating production Wrangler configuration through build/dry-run checks and exercising the real remote capability only in explicit T4/T5 tests.
+
 For runtime integration tests, prefer exercising exported Worker handlers and real local bindings. Storage state must be isolated between tests unless a test explicitly verifies shared-state behavior.
 
-## 5. CI and branch promotion gates
+## 6. CI and branch promotion gates
 
 The canonical environment model remains:
 
@@ -186,7 +214,7 @@ Required:
 - record deployment/release/version evidence;
 - rollback when a release-critical smoke fails and recovery is not immediately proven safe.
 
-## 6. Test evidence
+## 7. Test evidence
 
 A meaningful test result should identify, where applicable:
 
@@ -203,7 +231,7 @@ CI status is execution evidence. Issues/PRs may summarize it, but must not claim
 
 Control Room and other management surfaces should project this evidence rather than invent a second test status.
 
-## 7. Test data and external services
+## 8. Test data and external services
 
 - Never use production user data as ordinary test fixtures.
 - Prefer deterministic fixtures and disposable test identities/resources.
@@ -212,7 +240,7 @@ Control Room and other management surfaces should project this evidence rather t
 - Tests that consume paid APIs, send messages, write external Destinations, or mutate real infrastructure must be explicit T4/T5 operations and visibly scoped.
 - Idempotency/retry behavior must be tested for any workflow that can be retried after a partial external side effect.
 
-## 8. Coverage policy
+## 9. Coverage policy
 
 Organization policy does not impose a global line-coverage percentage.
 
@@ -220,7 +248,7 @@ Coverage percentage is a diagnostic, not an acceptance target. Repositories may 
 
 A changed critical contract with no targeted test is higher risk than a high global coverage number.
 
-## 9. Exceptions
+## 10. Exceptions
 
 A repository may diverge from this standard when its platform requires another approach. The exception must be documented locally with:
 
