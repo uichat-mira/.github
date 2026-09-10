@@ -1,0 +1,72 @@
+name: Work item
+description: Engineering work item with a clear scope and acceptance contract.
+title: ""
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for implementation, migration, maintenance, infrastructure, and other engineering work.
+        Project fields such as Stage, Target date, Effort, Assignees, and linked PRs are managed in Mira Development and should not be duplicated here.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What problem should this work item solve, or what outcome should it create?
+      placeholder: State the desired outcome in concrete terms.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Current facts, background, constraints, or relevant links needed to understand the work.
+      placeholder: Include only context that materially affects implementation or acceptance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is included in this work item?
+      placeholder: List the concrete changes or surfaces this work item owns.
+    validations:
+      required: true
+
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What is explicitly out of scope? Leave concise when there is nothing important to exclude.
+      placeholder: State boundaries that prevent accidental scope expansion.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true before this work item can be considered complete?
+      placeholder: Use checkable outcomes rather than implementation intentions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification / evidence
+      description: What evidence should be recorded to prove the acceptance criteria?
+      placeholder: Tests, CI runs, screenshots, runtime checks, PRs, deployment evidence, or human verification as appropriate.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies_risks
+    attributes:
+      label: Dependencies / risks
+      description: Optional dependencies, blockers, rollback concerns, or known risks.
+      placeholder: Add only when they materially affect execution.
+    validations:
+      required: false
