@@ -1,128 +1,114 @@
-# Repository Migration SOP
+# Migration SOP v1
 
-This SOP is based on the first completed Mira Organization migration pilot: `uichat-mira/uichat-mira-relay`.
+Use this SOP for Mira repository migrations into the `uichat-mira` Organization.
 
-The goal is not merely to move a repository between owners. A migration is complete only when ownership, CI/CD, environment semantics, and production verification have been checked.
+The rule is simple: **move one repository at a time, verify reality at every checkpoint, and keep a rollback anchor before production changes.**
 
-## Principle
+## Flow
 
-Migrate one repository at a time.
+```text
+Preflight audit
+→ Transfer
+→ Branch / CI organization
+→ Secrets / App authorization
+→ Prod deploy
+→ Health / smoke
+→ Close with rollback anchor
+```
 
-Do not bundle unrelated refactors, cleanup, branch deletion, or product changes into the migration unless they are required to make the migration safe.
+## 1. Preflight audit
 
-## Phase 1 — Preflight audit
+Before transfer, record the current real state:
 
-Before transfer, inspect the current repository as it actually exists.
+- default branch and active branches;
+- branch protection / rulesets;
+- Actions workflows and recent runs;
+- releases / tags / environments;
+- repository secrets / variables;
+- required GitHub Apps / integrations;
+- deployment config and external runtime resources;
+- hard-coded old owner/repository references.
 
-Minimum audit:
+Do not infer. Read the repository and current runtime state.
 
-- default branch;
-- all active branches and their real responsibilities;
-- branch protection, rulesets, and branch policies;
-- GitHub Actions workflows and recent runs;
-- releases and tags;
-- GitHub Environments;
-- repository secrets and variables;
-- webhooks;
-- installed GitHub Apps and integrations;
-- deployment configuration;
-- external runtime resources;
-- hard-coded references to the old owner/repository path.
+## 2. Transfer
 
-For Cloudflare-backed repositories, also identify which capabilities are actually used, for example Workers, Pages, R2, D1, Durable Objects, Workers AI, Workflows, DNS, or custom domains.
+Transfer the repository to `uichat-mira`.
 
-Do not infer usage from naming alone. Verify configuration and workflow files.
+Immediately verify:
 
-## Phase 2 — Repository transfer
+- repository identity/history is preserved;
+- expected branches, Actions history, releases and tags remain;
+- old repository URL redirects;
+- workflow/config files survived unchanged unless intentionally modified.
 
-Transfer the repository to the `uichat-mira` Organization.
+This is **Checkpoint 1: Repo Transfer Accepted**.
 
-Do not delete branches or rewrite history during transfer.
+## 3. Branch / CI organization
 
-### Checkpoint 1 — Repo Transfer Accepted
+Align deployment semantics to:
 
-Verify after transfer:
+```text
+feat/* → dev → test → prod
+```
 
-- repository identity is preserved rather than copied;
-- expected branches are present;
-- default branch did not change unexpectedly;
-- Actions history is preserved;
-- releases/tags are preserved where applicable;
-- old GitHub URL redirects to the new repository;
-- workflows and deployment configuration are still present;
-- no new hard-coded dependency on the old owner was introduced.
+- `feat/*`: CI only
+- `dev`: development integration/deploy
+- `test`: test/acceptance deploy
+- `prod`: production deploy
+- historical `main`: may remain, but must not bypass `prod`
 
-Only after this checkpoint passes should migration continue.
+Promote the same validated change through environments where practical.
 
-## Phase 3 — Organization credentials
+## 4. Secrets / App authorization
 
-Prefer organization-level CI/CD credentials for shared infrastructure when the same credential is intentionally used across Mira repositories.
+Verify the transferred repository can actually use every required organization credential and integration.
 
-Current shared Cloudflare GitHub Actions names:
+For shared Cloudflare CI/CD, current organization secrets are:
 
 ```text
 CLOUDFLARE_API_TOKEN
 CLOUDFLARE_ACCOUNT_ID
 ```
 
-Rules:
+Also verify any required GitHub App / installation authorization after transfer.
 
-- never commit credential values;
-- do not copy secret values into documentation;
-- do not delete a repository-level credential until the organization-level replacement has been verified in a real workflow run;
-- remember that GitHub Actions secrets and runtime application secrets are different things.
+Do not remove old repository-level credentials until the organization-level replacement has succeeded in a real workflow run.
 
-A Cloudflare control-plane token can authorize deployment, but it does not replace third-party runtime secret values such as provider API keys or GitHub destination tokens.
+## 5. Prod deploy
 
-## Phase 4 — Environment alignment
+Only after lower-environment verification, deploy from `prod`.
 
-Align deployment semantics with the Mira environment model:
+Production must be deployable from CI/CD without depending on a developer's local machine.
 
-```text
-feat/* → dev → test → prod
-```
+## 6. Health / smoke
 
-Expected deployment behavior:
+After production deployment, run the smallest meaningful production verification:
 
-- `feat/*`: CI only;
-- `dev`: development deployment;
-- `test`: test/acceptance deployment;
-- `prod`: production deployment.
+- health endpoint;
+- smoke request;
+- artifact availability;
+- or another repository-specific acceptance check.
 
-Historical `main` may remain, but it must not bypass `prod` and deploy production.
+A successful deploy command alone is not enough.
 
-Where possible, use separate runtime resources for `dev`, `test`, and `prod`.
+## 7. Rollback anchor
 
-## Phase 5 — Progressive deployment verification
+Before declaring migration complete, record enough information to restore the last known-good production state.
 
-Do not jump directly from migration to production.
+Minimum:
 
-Promote the same validated change progressively:
+- last known-good source commit/tag;
+- last known-good deployed version/release identifier;
+- rollback mechanism or command if the platform requires one.
 
-1. deploy `dev`;
-2. verify CI and deployment;
-3. promote to `test`;
-4. verify CI and deployment;
-5. promote to `prod`;
-6. verify production health or smoke behavior.
+This is **Checkpoint 2: Organization CI/CD Accepted**.
 
-If a lower environment fails, stop promotion and diagnose before continuing.
+## Relay pilot
 
-## Checkpoint 2 — Organization CI/CD Accepted
+`uichat-mira/uichat-mira-relay` is the reference implementation for v1.
 
-A runtime repository passes this checkpoint when:
-
-- organization credentials are read successfully;
-- CI passes;
-- `dev` deployment passes when applicable;
-- `test` deployment passes when applicable;
-- `prod` deployment passes;
-- production health/smoke verification passes;
-- production can be deployed without relying on a developer's local machine.
-
-## Relay pilot record
-
-The Relay pilot established the current baseline:
+Verified flow:
 
 ```text
 feat/* → CI only
@@ -132,6 +118,24 @@ prod   → uichat-mira-relay + relay.tomz.io
 main   → no deployment
 ```
 
-The pilot passed both repository-transfer and organization-CI/CD checkpoints.
+Verified production:
 
-Future migrations should reuse this sequence, adapting only the repository-specific runtime and acceptance checks.
+- new production version: `9682efd1-cb72-4ec6-8a84-cfa9273bbba2`
+- health: `ok=true`, service `mira-remote-relay`, protocolVersion `1`
+- previous production Worker version / rollback anchor: `bb534ec3-61a5-47b9-9a50-d71f47c4c336`
+- pre-environment-alignment source anchor: `cc0dc57d4772f31f73e4e853b20275c7c1843a5e`
+
+Relay passed both checkpoints.
+
+## Done means done
+
+A repository migration is complete only when:
+
+```text
+transfer verified
++ CI organization verified
++ required secrets/apps verified
++ prod deployed by CI
++ production health/smoke passed
++ rollback anchor recorded
+```
