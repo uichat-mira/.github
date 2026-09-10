@@ -1,4 +1,3 @@
-# Mira Development Project intake automation
 name: Mira Development project intake
 
 on:
@@ -24,6 +23,7 @@ jobs:
       GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
       ORG: uichat-mira
       PROJECT_NUMBER: '1'
+      API_VERSION: '2026-03-10'
     steps:
       - name: Validate project credential
         shell: bash
@@ -33,7 +33,11 @@ jobs:
             echo '::error::ORG_GITHUB_TOKEN is not available to uichat-mira/.github.'
             exit 1
           fi
-          gh project view "$PROJECT_NUMBER" --owner "$ORG" >/dev/null
+
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}" >/dev/null
 
       - name: Add open Organization Issues to Mira Development
         shell: bash
@@ -41,43 +45,55 @@ jobs:
           set -euo pipefail
 
           issues_file="$(mktemp)"
-          project_file="$(mktemp)"
 
           gh api --paginate \
             -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
             "/search/issues?q=org%3A${ORG}+is%3Aissue+is%3Aopen&per_page=100" \
-            --jq '.items[].html_url' \
+            --jq '.items[] | [.id, .html_url] | @tsv' \
             | sort -u > "$issues_file"
 
-          gh project item-list "$PROJECT_NUMBER" \
-            --owner "$ORG" \
-            --limit 1000 \
-            --format json \
-            --jq '.items[].content.url // empty' \
-            | sort -u > "$project_file"
-
-          added=0
-          existing=0
+          added_or_existing=0
           failed=0
 
-          while IFS= read -r issue_url; do
-            [ -n "$issue_url" ] || continue
+          while IFS=$'\t' read -r issue_id issue_url; do
+            [ -n "${issue_id:-}" ] || continue
+            [ -n "${issue_url:-}" ] || continue
 
-            if grep -Fxq "$issue_url" "$project_file"; then
-              existing=$((existing + 1))
-              continue
-            fi
+            echo "Ensuring $issue_url is in Mira Development"
 
-            echo "Adding $issue_url"
-            if gh project item-add "$PROJECT_NUMBER" --owner "$ORG" --url "$issue_url" >/dev/null; then
-              added=$((added + 1))
-            else
-              echo "::error::Failed to add $issue_url to Mira Development"
-              failed=$((failed + 1))
-            fi
+            # The organization-owned Projects V2 REST endpoint is idempotent:
+            # 201 means added; 304 means the item is already present.
+            response_file="$(mktemp)"
+            status="$({
+              gh api \
+                --method POST \
+                -H 'Accept: application/vnd.github+json' \
+                -H "X-GitHub-Api-Version: ${API_VERSION}" \
+                "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}/items" \
+                -f type='Issue' \
+                -F id="$issue_id" \
+                --include > "$response_file"
+            } 2>&1 || true)"
+
+            http_status="$(head -n 1 "$response_file" | awk '{print $2}')"
+
+            case "$http_status" in
+              201|304)
+                added_or_existing=$((added_or_existing + 1))
+                ;;
+              *)
+                echo "::error::Failed to add $issue_url to Mira Development (HTTP ${http_status:-unknown})"
+                sed -n '1,20p' "$response_file" | sed -E 's/(authorization:|token )[[:graph:]]+/\1 [REDACTED]/Ig'
+                if [ -n "$status" ]; then
+                  echo "$status"
+                fi
+                failed=$((failed + 1))
+                ;;
+            esac
           done < "$issues_file"
 
-          echo "Project intake summary: added=$added existing=$existing failed=$failed"
+          echo "Project intake summary: ensured=$added_or_existing failed=$failed"
 
           if [ "$failed" -ne 0 ]; then
             exit 1
