@@ -6,6 +6,7 @@ This repository contains organization-wide engineering policy, reusable SOPs, an
 
 - [Environment Model](docs/engineering/environment-model.md) — `feat/* → dev → test → prod`
 - [Mira Cloud Core Specification](docs/engineering/mira-cloud.md) — shared backend naming, service boundaries, client contracts, and unified authentication semantics
+- [Organization Testing Standard](docs/engineering/testing-standard.md) — shared test layers, command semantics, CI evidence, and promotion gates
 
 ## SOP
 
