@@ -101,17 +101,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Stage is an organization Issue Field surfaced in the Project.
-          # The Project fields endpoint exposes its numeric Issue Field ID.
-          fields_json="$(gh api \
+          issue_fields_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H "X-GitHub-Api-Version: ${API_VERSION}" \
-            "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}/fields?per_page=100")"
+            "/orgs/${ORG}/issue-fields")"
 
-          stage_field_id="$(jq -r '.[] | select(.name == "Stage") | .id' <<<"$fields_json" | head -n 1)"
+          stage_field_id="$(jq -r '.[] | select(.name == "Stage") | .id' <<<"$issue_fields_json" | head -n 1)"
 
           if [ -z "${stage_field_id:-}" ] || [ "$stage_field_id" = "null" ]; then
-            echo '::error::Could not resolve Stage field from Mira Development.'
+            echo '::error::Could not resolve organization Issue Field named Stage.'
+            jq -r '.[] | [.id, .name, .data_type] | @tsv' <<<"$issue_fields_json"
             exit 1
           fi
 
