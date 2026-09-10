@@ -1,0 +1,83 @@
+name: Mira Development project intake
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/project-auto-add.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mira-development-project-intake
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
+      ORG: uichat-mira
+      PROJECT_NUMBER: '1'
+    steps:
+      - name: Validate project credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo '::error::ORG_GITHUB_TOKEN is not available to uichat-mira/.github.'
+            exit 1
+          fi
+          gh project view "$PROJECT_NUMBER" --owner "$ORG" >/dev/null
+
+      - name: Add open Organization Issues to Mira Development
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          issues_file="$(mktemp)"
+          project_file="$(mktemp)"
+
+          gh api --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/search/issues?q=org%3A${ORG}+is%3Aissue+is%3Aopen&per_page=100" \
+            --jq '.items[].html_url' \
+            | sort -u > "$issues_file"
+
+          gh project item-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --limit 1000 \
+            --format json \
+            --jq '.items[].content.url // empty' \
+            | sort -u > "$project_file"
+
+          added=0
+          existing=0
+          failed=0
+
+          while IFS= read -r issue_url; do
+            [ -n "$issue_url" ] || continue
+
+            if grep -Fxq "$issue_url" "$project_file"; then
+              existing=$((existing + 1))
+              continue
+            fi
+
+            echo "Adding $issue_url"
+            if gh project item-add "$PROJECT_NUMBER" --owner "$ORG" --url "$issue_url" >/dev/null; then
+              added=$((added + 1))
+            else
+              echo "::error::Failed to add $issue_url to Mira Development"
+              failed=$((failed + 1))
+            fi
+          done < "$issues_file"
+
+          echo "Project intake summary: added=$added existing=$existing failed=$failed"
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
