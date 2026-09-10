@@ -101,6 +101,28 @@ jobs:
         run: |
           set -euo pipefail
 
+          project_node_id="$(gh project view "$PROJECT_NUMBER" --owner "$ORG" --format json --jq '.id')"
+          fields_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "/orgs/${ORG}/projectsV2/${PROJECT_NUMBER}/fields?per_page=100")"
+
+          stage_field_node_id="$(jq -r '.[] | select(.name == "Stage") | .node_id' <<<"$fields_json" | head -n 1)"
+          backlog_option_id="$(jq -r '.[] | select(.name == "Stage") | .options[]? | select(.name.raw == "Backlog") | .id' <<<"$fields_json" | head -n 1)"
+
+          if [ -z "${project_node_id:-}" ] || [ "$project_node_id" = "null" ]; then
+            echo '::error::Could not resolve Mira Development project node ID.'
+            exit 1
+          fi
+
+          if [ -z "${stage_field_node_id:-}" ] || [ "$stage_field_node_id" = "null" ] || \
+             [ -z "${backlog_option_id:-}" ] || [ "$backlog_option_id" = "null" ]; then
+            echo '::error::Could not resolve Stage field and Backlog option from Mira Development.'
+            echo 'Available project fields:'
+            jq -r '.[] | [.name, .data_type, ([.options[]?.name.raw] | join(","))] | @tsv' <<<"$fields_json"
+            exit 1
+          fi
+
           untriaged_file="$(mktemp)"
 
           gh project item-list "$PROJECT_NUMBER" \
@@ -108,21 +130,22 @@ jobs:
             --limit 1000 \
             --query 'is:issue is:open no:stage' \
             --format json \
-            --jq '.items[].content.url // empty' \
+            --jq '.items[] | [.id, .content.url] | @tsv' \
             | sort -u > "$untriaged_file"
 
           updated=0
           failed=0
 
-          while IFS= read -r issue_url; do
+          while IFS=$'\t' read -r item_node_id issue_url; do
+            [ -n "${item_node_id:-}" ] || continue
             [ -n "${issue_url:-}" ] || continue
 
             echo "Defaulting $issue_url to Stage=Backlog"
-            if gh project item-edit "$PROJECT_NUMBER" \
-              --owner "$ORG" \
-              --url "$issue_url" \
-              --field 'Stage' \
-              --value 'Backlog' >/dev/null; then
+            if gh project item-edit \
+              --id "$item_node_id" \
+              --project-id "$project_node_id" \
+              --field-id "$stage_field_node_id" \
+              --single-select-option-id "$backlog_option_id" >/dev/null; then
               updated=$((updated + 1))
             else
               echo "::error::Failed to set Stage=Backlog for $issue_url"
