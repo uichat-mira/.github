@@ -147,7 +147,7 @@ Mira Gate
 
 The aggregate must not hide failures or turn a skipped required check into success. Layer-specific jobs remain visible for diagnosis; `Mira Gate` exists so branch protection, Control Room, and other Organization projections can consume one stable semantic status without knowing whether a repository uses Jest, Vitest, XCTest, Gradle, Wrangler, or another runner.
 
-Where GitHub Actions is used, prefer implementing `Mira Gate` as a small final job with `needs` on the required jobs rather than duplicating the tests in the aggregate job.
+Where GitHub Actions is used, implement `Mira Gate` as a small final job with `needs` on the required jobs rather than duplicating tests. The aggregate job must use a job-level condition such as `if: ${{ always() }}` so it still executes after a dependency fails or is skipped, then explicitly inspect every required `needs.<job>.result`. A required result other than `success` must fail `Mira Gate` unless repository policy has explicitly classified that check as not applicable. Do not rely on GitHub's default skip behavior for aggregation.
 
 ## 5. Mira Cloud test profile
 
