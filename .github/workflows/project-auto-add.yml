@@ -98,3 +98,43 @@ jobs:
           if [ "$failed" -ne 0 ]; then
             exit 1
           fi
+
+      - name: Default open Issues without Stage to Backlog
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          untriaged_file="$(mktemp)"
+
+          gh project item-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --limit 1000 \
+            --query 'is:issue is:open no:stage' \
+            --format json \
+            --jq '.items[].content.url // empty' \
+            | sort -u > "$untriaged_file"
+
+          updated=0
+          failed=0
+
+          while IFS= read -r issue_url; do
+            [ -n "${issue_url:-}" ] || continue
+
+            echo "Defaulting $issue_url to Stage=Backlog"
+            if gh project item-edit "$PROJECT_NUMBER" \
+              --owner "$ORG" \
+              --url "$issue_url" \
+              --field 'Stage' \
+              --value 'Backlog' >/dev/null; then
+              updated=$((updated + 1))
+            else
+              echo "::error::Failed to set Stage=Backlog for $issue_url"
+              failed=$((failed + 1))
+            fi
+          done < "$untriaged_file"
+
+          echo "Stage default summary: updated=$updated failed=$failed"
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
