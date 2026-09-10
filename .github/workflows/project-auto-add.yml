@@ -101,6 +101,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Stage is an organization Issue Field surfaced as a Project column.
+          # Issue-backed field values must be written through the Issue Fields API,
+          # not the Project item field mutation used for project-only custom fields.
           issue_fields_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H "X-GitHub-Api-Version: ${API_VERSION}" \
