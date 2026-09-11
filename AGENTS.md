@@ -1,5 +1,7 @@
 # Mira Organization AI Instructions
 
+Policy revision: `2026-09-11.1`
+
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
 
 Use it as an **Organization-level router and standing contract**, not as a replacement for repository-specific instructions or the underlying policy documents it references.
