@@ -1,6 +1,6 @@
 # Mira Organization AI Instructions
 
-Policy revision: `2026-09-11.3`
+Policy revision: `2026-09-11.4`
 Constitution: `v1`
 
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
@@ -79,6 +79,19 @@ These are default engineering heuristics for implementation work, not a universa
 8. **Machine-enforce mechanical rules close to the code.** Formatting, lint, type, generated-code, dependency, test, and similar mechanical constraints should live in repository tooling/configuration/CI when practical. Documentation should point to those executable sources rather than duplicating long rule lists that can drift.
 
 Repository-local `AGENTS.md`, code/configuration, executable tooling, and the current task contract may add project-specific implementation rules under the instruction-priority model below.
+
+## Testing Guidance
+
+These are durable principles for deciding what evidence is sufficient. Concrete test layers, commands, runners, CI gates, environment promotion rules, and platform-specific practices belong in [`docs/engineering/testing-standard.md`](docs/engineering/testing-standard.md) and repository-local tooling.
+
+1. **Test behavior, contracts, and risk—not incidental implementation shape.** Tests should prove outcomes, boundaries, invariants, and failure behavior that matter to the task. Avoid locking harmless internal structure unless that structure is itself part of the contract.
+2. **Use the lowest sufficient evidence.** Prefer the cheapest reliable test that can actually prove the claim. Do not escalate to expensive integration or end-to-end checks without reason, and do not use a lower-level passing test as evidence for a higher-level behavior it cannot prove.
+3. **Do not mock away the subject under test.** Mock or fake unrelated external boundaries when useful, but exercise the runtime, protocol, persistence behavior, or integration capability that the test is supposed to verify.
+4. **Bug fixes should leave regression evidence when practical.** When a defect can be reproduced deterministically and the cost is proportionate, add evidence that fails for the old behavior and protects the corrected behavior from returning.
+5. **Never make failure green by weakening verification.** Do not skip, delete, disable, broaden mocks, swallow errors, loosen assertions, or bypass safety checks merely to obtain a passing result. If a check is obsolete, repair or retire it with an explicit reason.
+6. **Verification strength follows risk.** Changes to public contracts, authentication, permissions, persistence, migration, concurrency, destructive operations, external side effects, runtime boundaries, or deployment behavior require stronger evidence than ordinary local logic changes.
+7. **Evidence belongs to the thing actually tested.** A result must identify the relevant code, runtime, environment, device, candidate, or deployment. Evidence from another version or another layer must not be presented as proof for the current one.
+8. **Coverage is diagnostic, not a universal target.** Prefer meaningful protection of critical contracts, failure paths, boundaries, and user/service journeys over optimizing a global coverage percentage.
 
 ## Start here
 
