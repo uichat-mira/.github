@@ -1,0 +1,42 @@
+name: Reconcile AI Review #15 stage once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/reconcile-ai-review-15-stage-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN }}
+      API_VERSION: '2026-03-10'
+    steps:
+      - name: Set control-room #15 to In Progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}"
+
+          stage_field_id="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            /orgs/uichat-mira/issue-fields \
+            --jq '.[] | select(.name == "Stage") | .id' | head -n 1)"
+
+          test -n "${stage_field_id:-}"
+
+          payload="$(jq -nc \
+            --argjson field_id "$stage_field_id" \
+            '{issue_field_values:[{field_id:$field_id,value:"In Progress"}]}')"
+
+          gh api \
+            --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            /repos/uichat-mira/control-room/issues/15/issue-field-values \
+            --input - <<<"$payload" >/dev/null
