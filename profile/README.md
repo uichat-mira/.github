@@ -18,6 +18,12 @@
   <a href="https://control.mira.tomz.io">Control Room</a>
 </p>
 
+<p align="center">
+  <a href="https://control.mira.tomz.io">
+    <img src="https://control.mira.tomz.io/embed/github-overview.svg" width="900" alt="Mira Control Room live organization snapshot" />
+  </a>
+</p>
+
 ---
 
 Mira is a small family of projects built around one idea: keep the useful parts close to the user, make powerful capabilities understandable, and let each layer own only what it should.
