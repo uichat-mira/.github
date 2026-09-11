@@ -2,6 +2,10 @@
 
 This repository contains organization-wide engineering policy, reusable SOPs, GitHub defaults, and collaboration Skills for the `uichat-mira` Organization.
 
+## AI Instructions
+
+- [Organization AGENTS.md](AGENTS.md) — canonical Organization-level AI instruction entry and progressive-disclosure router for policies, SOPs, and Skills
+
 ## Engineering
 
 - [Environment Model](docs/engineering/environment-model.md) — `feat/* → dev → test → prod`
