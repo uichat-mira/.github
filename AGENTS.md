@@ -1,6 +1,6 @@
 # Mira Organization AI Instructions
 
-Policy revision: `2026-09-11.2`
+Policy revision: `2026-09-11.3`
 Constitution: `v1`
 
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
@@ -64,6 +64,21 @@ Do not copy Organization policy into repositories merely for convenience unless 
 Use the current retrieved version of this file when it is available. Do not substitute a remembered or previously cached copy.
 
 `Policy revision` is the canary for remote retrieval. A task should be able to identify which current Organization policy it relied on when that matters for audit or verification.
+
+## Coding Guidance
+
+These are default engineering heuristics for implementation work, not a universal syntax, framework, file-layout, or style law. Apply them when a higher-priority task or repository contract does not specify something more concrete.
+
+1. **Understand before changing.** Read the relevant implementation, nearby types, tests, configuration, and active documentation before editing. Prefer an existing working pattern when it fits the problem.
+2. **Make the minimum coherent change.** Change what the accepted outcome requires. Do not attach unrelated refactors, style rewrites, migrations, or cleanup merely because the same files are open.
+3. **Preserve contracts and boundaries by default.** Internal refactoring must not silently change public API, protocol, schema, state semantics, persistence, security, runtime boundaries, or cross-repository behavior. Contract changes require explicit scope and verification.
+4. **Let abstraction follow evidence.** Prefer local consistency over introducing a new pattern. Extract a shared abstraction when real repetition, a confirmed extension point, or a current contract justifies it—not for hypothetical future reuse.
+5. **Do not hide failure to make progress look green.** Do not use silent fallback, swallowed errors, hardcoded local values, production mocks, disabled type/lint/test/security checks, or other bypasses to make verification appear successful. Temporary debug or test behavior must stay isolated and explicit.
+6. **Treat compatibility and dead paths as liabilities.** Keep compatibility logic only for an identified consumer or failure mode. When it must remain, make the reason and removal condition clear. Once a path is verified obsolete and no longer owns current behavior, remove it instead of preserving it indefinitely.
+7. **Code explains what; comments explain why.** Comments should capture intent, invariants, non-obvious tradeoffs, external constraints, edge cases, or removal conditions. Do not use comments to restate obvious code or fossilize temporary implementation details.
+8. **Machine-enforce mechanical rules close to the code.** Formatting, lint, type, generated-code, dependency, test, and similar mechanical constraints should live in repository tooling/configuration/CI when practical. Documentation should point to those executable sources rather than duplicating long rule lists that can drift.
+
+Repository-local `AGENTS.md`, code/configuration, executable tooling, and the current task contract may add project-specific implementation rules under the instruction-priority model below.
 
 ## Start here
 
