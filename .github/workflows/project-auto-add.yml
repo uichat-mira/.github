@@ -190,10 +190,11 @@ jobs:
 
           closed_file="$(mktemp)"
 
+          # Only inspect closed items whose Stage is not already Done.
           gh project item-list "$PROJECT_NUMBER" \
             --owner "$ORG" \
             --limit 1000 \
-            --query 'is:issue is:closed' \
+            --query 'is:issue is:closed -stage:Done' \
             --format json \
             --jq '.items[].content.url // empty' \
             | sort -u > "$closed_file"
