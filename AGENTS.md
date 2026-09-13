@@ -1,6 +1,6 @@
 # Mira Organization AI Instructions
 
-Policy revision: `2026-09-11.4`
+Policy revision: `2026-09-14.1`
 Constitution: `v1`
 
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
@@ -136,6 +136,7 @@ Load only what the current task needs. Do not preload every Skill or policy mere
 | Task | Read |
 | --- | --- |
 | Create, split, formalize, or record an engineering work item | [`skills/create-work-item/SKILL.md`](skills/create-work-item/SKILL.md) |
+| Move, verify, accept, close, reopen, or reason about a work item's Stage lifecycle | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
 | Determine work-item / Project / policy source-of-truth boundaries | [`docs/governance/source-of-truth.md`](docs/governance/source-of-truth.md) |
 | Apply shared test layers, evidence, or promotion verification | [`docs/engineering/testing-standard.md`](docs/engineering/testing-standard.md) |
 | Reason about `feat/* → dev → test → prod` environment semantics | [`docs/engineering/environment-model.md`](docs/engineering/environment-model.md) |
