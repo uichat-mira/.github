@@ -26,6 +26,41 @@
 
 ---
 
+## No 996. No exploitation.
+## 反对 996。反对以奋斗之名压榨劳动者。
+
+**Mira is built for people. It will not celebrate a culture that consumes them.**
+
+We oppose illegal forced overtime, unpaid overtime, coercive “voluntary” overtime, and any practice that pressures workers to surrender rights they are entitled to by law.
+
+If a business can survive only by taking people's nights, weekends, health, and dignity without lawful compensation, **the problem is not that its employees are not working hard enough. The problem is the business.**
+
+Mira's source code is released under the MIT License. We keep that freedom deliberately. But freedom to use our code is **not** our endorsement of how you treat the people who build your products.
+
+**Do not use “open source” as a prettier word for free labor.  
+Do not call exploitation dedication.  
+Do not call fear voluntary.  
+And do not call 996 progress.**
+
+**Mira 是为人而做的。我们不会歌颂一种消耗人的工作文化。**
+
+我们反对违法强制加班、无偿加班、以明示或暗示方式强迫员工“自愿加班”，也反对任何诱导、逼迫劳动者放弃其依法享有权利的行为。
+
+如果一家企业必须依靠夺走员工的夜晚、周末、健康和尊严，并且拒绝给予合法补偿才能维持运转，**问题不是员工还不够努力，问题就是这家企业本身。**
+
+Mira 的源代码继续采用 MIT License。我们有意保留这种自由。但你有自由使用我们的代码，**不等于我们认可你如何对待替你写代码、做产品、维持系统运转的人。**
+
+**不要把“开源”包装成免费劳动。  
+不要把压榨叫作奋斗。  
+不要把恐惧之下的服从叫作自愿。  
+更不要把 996 叫作进步。**
+
+**People are not infrastructure. 人不是基础设施。**
+
+[Read the full Mira Fair Work Statement / 阅读完整 Mira 公平劳动声明 →](https://github.com/uichat-mira/.github/blob/main/FAIR-WORK.md)
+
+---
+
 Mira is a small family of projects built around one idea: keep the useful parts close to the user, make powerful capabilities understandable, and let each layer own only what it should.
 
 ## The core
