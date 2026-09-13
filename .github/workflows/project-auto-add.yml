@@ -169,3 +169,103 @@ jobs:
           if [ "$failed" -ne 0 ]; then
             exit 1
           fi
+
+      - name: Reconcile completed Issues to Done
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          issue_fields_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "/orgs/${ORG}/issue-fields")"
+
+          stage_field_id="$(jq -r '.[] | select(.name == "Stage") | .id' <<<"$issue_fields_json" | head -n 1)"
+
+          if [ -z "${stage_field_id:-}" ] || [ "$stage_field_id" = "null" ]; then
+            echo '::error::Could not resolve organization Issue Field named Stage.'
+            jq -r '.[] | [.id, .name, .data_type] | @tsv' <<<"$issue_fields_json"
+            exit 1
+          fi
+
+          closed_file="$(mktemp)"
+
+          gh project item-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --limit 1000 \
+            --query 'is:issue is:closed' \
+            --format json \
+            --jq '.items[].content.url // empty' \
+            | sort -u > "$closed_file"
+
+          updated=0
+          already_done=0
+          skipped=0
+          failed=0
+
+          while IFS= read -r issue_url; do
+            [ -n "${issue_url:-}" ] || continue
+
+            issue_path="${issue_url#https://github.com/}"
+            issue_owner="${issue_path%%/*}"
+            remainder="${issue_path#*/}"
+            issue_repo="${remainder%%/*}"
+            issue_number="${issue_url##*/}"
+
+            if [ "$issue_owner" != "$ORG" ] || ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+              echo "::error::Unexpected Issue URL from project: $issue_url"
+              failed=$((failed + 1))
+              continue
+            fi
+
+            state_reason="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "/repos/${issue_owner}/${issue_repo}/issues/${issue_number}" \
+              --jq '.state_reason // ""')"
+
+            if [ "$state_reason" != "completed" ]; then
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            field_values_json="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "/repos/${issue_owner}/${issue_repo}/issues/${issue_number}/issue-field-values")"
+
+            current_stage="$(jq -r \
+              --argjson field_id "$stage_field_id" \
+              '.[] | select(.issue_field_id == $field_id) | (.single_select_option.name // .value // empty)' \
+              <<<"$field_values_json" \
+              | head -n 1)"
+
+            if [ "$current_stage" = "Done" ]; then
+              already_done=$((already_done + 1))
+              continue
+            fi
+
+            echo "Reconciling $issue_url to Stage=Done"
+
+            payload="$(jq -nc \
+              --argjson field_id "$stage_field_id" \
+              '{issue_field_values:[{field_id:$field_id,value:"Done"}]}')"
+
+            if gh api \
+              --method POST \
+              -H 'Accept: application/vnd.github+json' \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "/repos/${issue_owner}/${issue_repo}/issues/${issue_number}/issue-field-values" \
+              --input - <<<"$payload" >/dev/null; then
+              updated=$((updated + 1))
+            else
+              echo "::error::Failed to set Stage=Done for $issue_url"
+              failed=$((failed + 1))
+            fi
+          done < "$closed_file"
+
+          echo "Completed Stage reconciliation summary: updated=$updated already_done=$already_done skipped=$skipped failed=$failed"
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
