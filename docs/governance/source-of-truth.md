@@ -2,6 +2,8 @@
 
 Mira uses different sources of truth for different kinds of information. The goal is to avoid one document pretending to be authoritative for everything.
 
+> **Lifecycle transition hold:** lifecycle field ownership is currently being re-audited. This document does not authorize mutation of Organization Issue Field `Stage` or Project `Status`. For any move / acceptance / closure / reopen decision, follow [`work-item-lifecycle.md`](work-item-lifecycle.md) first and leave Stage/Status unchanged unless the maintainer explicitly requests a lifecycle-field mutation.
+
 ## 1. Code and runtime state
 
 For questions such as:
@@ -27,10 +29,12 @@ It should carry the information needed to understand and accept that unit of wor
 - constraints;
 - acceptance criteria;
 - decisions;
-- current status;
+- current work-item context needed to interpret the contract;
 - links to implementation or verification evidence.
 
 If the implementation changes the agreed scope, update the Issue rather than leaving the decision only in chat.
+
+During the lifecycle transition hold, do not maintain a prose copy of Project Stage/Status in the Issue body merely to compensate for stale lifecycle metadata.
 
 ## 3. Organization docs — policy and SOP truth
 
@@ -53,12 +57,14 @@ It may organize Issues by:
 
 - priority;
 - owner;
-- stage;
+- lifecycle/workflow fields;
 - milestone;
 - release;
 - migration status.
 
 Project fields are useful for planning and visibility, but they must not silently replace the Issue's scope or acceptance criteria.
+
+During the lifecycle transition hold, stale Stage/Status values are tolerated; do not repair them by inference.
 
 ## 5. mira.tomz.io — public projection
 
@@ -81,6 +87,8 @@ Use this order:
 5. website for public presentation.
 
 Then repair the stale projection instead of forcing reality to match an outdated document.
+
+During the lifecycle transition hold, the normal "repair stale projection" rule does **not** authorize inferred Stage/Status writes; lifecycle metadata waits for the accepted replacement model unless the maintainer explicitly directs a mutation.
 
 ## Working rule
 
