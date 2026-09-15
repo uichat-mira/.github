@@ -1,11 +1,23 @@
 # Mira Organization AI Instructions
 
-Policy revision: `2026-09-14.1`
+Policy revision: `2026-09-15.1`
 Constitution: `v1`
 
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
 
 It contains the durable Organization constitution plus routing to task-specific policy, SOP, and Skills. It must stay concise: detailed domain rules belong in their owning documents, not duplicated here.
+
+## Temporary lifecycle transition hold
+
+The Organization is re-auditing the work-item lifecycle model. Until that replacement contract is explicitly accepted:
+
+- active Issues and PRs continue under their existing task, repository, review, testing, and environment contracts;
+- do not reinterpret acceptance criteria or force in-flight work to migrate lifecycle metadata;
+- do not mutate Organization Issue Field `Stage` or Project `Status` unless the maintainer explicitly requests that mutation for the specific work item;
+- do not infer lifecycle transitions from PR merge, branch, CI, deployment, Issue close reason, comments, or timestamps;
+- Project intake may keep work discoverable, but lifecycle metadata may remain stale during the hold.
+
+Before creating, moving, accepting, closing, or reopening a work item, load the routed work-item guidance below. The transition hold is a compatibility guard, not the final Status/Stage design.
 
 ## Constitution v1
 
@@ -136,7 +148,7 @@ Load only what the current task needs. Do not preload every Skill or policy mere
 | Task | Read |
 | --- | --- |
 | Create, split, formalize, or record an engineering work item | [`skills/create-work-item/SKILL.md`](skills/create-work-item/SKILL.md) |
-| Move, verify, accept, close, reopen, or reason about a work item's Stage lifecycle | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
+| Move, verify, accept, close, reopen, or reason about work-item lifecycle metadata | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
 | Determine work-item / Project / policy source-of-truth boundaries | [`docs/governance/source-of-truth.md`](docs/governance/source-of-truth.md) |
 | Apply shared test layers, evidence, or promotion verification | [`docs/engineering/testing-standard.md`](docs/engineering/testing-standard.md) |
 | Reason about `feat/* → dev → test → prod` environment semantics | [`docs/engineering/environment-model.md`](docs/engineering/environment-model.md) |
