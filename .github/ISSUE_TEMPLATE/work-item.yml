@@ -6,7 +6,8 @@ body:
     attributes:
       value: |
         Use this form for implementation, migration, maintenance, infrastructure, and other engineering work.
-        Project fields such as Stage, Target date, Effort, Assignees, and linked PRs are managed in Mira Development and should not be duplicated here.
+        Keep the Issue focused on the work contract. Management metadata and GitHub relationships are maintained through their owning fields/views and should not be duplicated here.
+        During the current lifecycle transition hold, do not set or infer Stage / Project Status as part of Issue creation unless the maintainer explicitly asks for that mutation.
 
   - type: textarea
     id: goal
