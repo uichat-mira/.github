@@ -7,7 +7,7 @@ description: Create small, independently verifiable Mira Organization engineerin
 
 Use this Skill when a maintainer asks to create, split, formalize, or record an engineering task for a repository under `uichat-mira`.
 
-The output of this Skill is a **GitHub Issue work-item contract**. It is not a second ledger, an implementation plan pretending to be a contract, or a Project status update.
+The output of this Skill is a **GitHub Issue work-item contract**. It is not a second ledger, an implementation plan pretending to be a contract, or a Project lifecycle update.
 
 ## Core principles
 
@@ -131,24 +131,24 @@ Record only material blockers, ordering constraints, rollback concerns, external
 
 A dependency should not become an excuse to make one Issue own several independently verifiable tasks.
 
-### 5. Leave management projection to Project automation
+### 5. Keep management metadata out of the Issue body
 
-Do not duplicate Project-owned management metadata in the Issue body, including fields such as:
+Do not duplicate management metadata in the Issue body when GitHub already owns that information through fields, relationships, or Project views. Examples include target dates, effort, assignees, linked pull requests, and Project lifecycle fields.
 
-- Stage;
-- Target date;
-- Effort;
-- Assignees;
-- Linked pull requests;
-- Sub-issues progress.
+Ordinary work-item creation may rely on Organization automation to add the open Issue to `Mira Development`; do not manually add it merely to duplicate intake.
 
-Do not manually add the Issue to `Mira Development` or set an initial Stage as part of ordinary work-item creation. Existing Organization automation owns Project intake and defaults an empty Stage to `Backlog`.
+**Lifecycle transition hold:** the Organization is currently re-auditing the Stage/Status lifecycle model. While [`../../docs/governance/work-item-lifecycle.md`](../../docs/governance/work-item-lifecycle.md) is in transition-hold status:
 
-The Issue contract must remain meaningful even when the Project projection is stale or temporarily unavailable.
+- do not set an initial `Stage` or Project `Status` as part of work-item creation;
+- do not promise that intake will default a lifecycle field;
+- do not infer a lifecycle value from Issue type, priority, target date, or implementation intent;
+- leave existing Stage/Status values untouched unless the maintainer explicitly asks to mutate them.
+
+The Issue contract must remain meaningful even when the Project projection or lifecycle metadata is stale or temporarily unavailable.
 
 ### 6. Stop after creating the work item
 
-Creating a work item does not implicitly authorize implementation, branch creation, merge, deployment, release, acceptance, or Project status mutation.
+Creating a work item does not implicitly authorize implementation, branch creation, merge, deployment, release, acceptance, or Project lifecycle mutation.
 
 Those actions follow their own repository and Organization contracts.
 
@@ -165,7 +165,8 @@ Before submitting the Issue, confirm:
 - acceptance criteria are observable;
 - verification evidence is explicit and proportionate;
 - current facts were not inferred from stale docs when better evidence exists;
-- Project management fields are not duplicated in prose;
+- management metadata is not duplicated in prose;
+- no Stage/Status lifecycle mutation was smuggled into creation during the transition hold;
 - no unrelated implementation or cleanup has been smuggled into the work item.
 
 If these checks fail, refine or split the work item before creating it.
