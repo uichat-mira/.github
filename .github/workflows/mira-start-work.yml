@@ -1,0 +1,105 @@
+name: Mira Start Work
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: GitHub Issue number that owns the work
+        required: true
+        type: number
+      command:
+        description: Trusted start-work command emitted by the repository caller
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  create-linked-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Parse trusted start-work command
+        id: target
+        shell: bash
+        env:
+          MIRA_START_WORK_COMMAND: ${{ inputs.command }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const command = process.env.MIRA_START_WORK_COMMAND?.trim() ?? '';
+          const match = command.match(
+            /^<!--\s*mira:start-work\s+base=([A-Za-z0-9._/-]+)\s+branch=([A-Za-z0-9._/-]+)\s*-->$/,
+          );
+          if (!match) throw new Error('Invalid Mira start-work command.');
+
+          const [, base, branch] = match;
+          for (const [label, value] of [['base', base], ['branch', branch]]) {
+            if (
+              value.startsWith('/') ||
+              value.endsWith('/') ||
+              value.includes('..') ||
+              value.includes('//') ||
+              value.includes('@{') ||
+              value.endsWith('.')
+            ) {
+              throw new Error(`Invalid ${label} ref.`);
+            }
+          }
+          if (base === branch) throw new Error('Base and work branch must differ.');
+
+          console.log(`base=${base}`);
+          console.log(`branch=${branch}`);
+          NODE
+
+      - name: Create GitHub-native linked branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_REF: ${{ steps.target.outputs.base }}
+          BRANCH_NAME: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+
+          target_json="$(
+            gh api graphql \
+              -f query='query($owner:String!,$repo:String!,$issue:Int!,$base:String!){repository(owner:$owner,name:$repo){id issue(number:$issue){id} object(expression:$base){... on Commit{oid}}}}' \
+              -F owner="$owner" \
+              -F repo="$repo" \
+              -F issue="$ISSUE_NUMBER" \
+              -F base="$BASE_REF"
+          )"
+
+          repository_id="$(jq -r '.data.repository.id // empty' <<< "$target_json")"
+          issue_id="$(jq -r '.data.repository.issue.id // empty' <<< "$target_json")"
+          base_oid="$(jq -r '.data.repository.object.oid // empty' <<< "$target_json")"
+
+          test -n "$repository_id"
+          test -n "$issue_id"
+          test -n "$base_oid"
+
+          result="$(
+            gh api graphql \
+              -f query='mutation($issueId:ID!,$repositoryId:ID!,$oid:GitObjectID!,$name:String!){createLinkedBranch(input:{issueId:$issueId,repositoryId:$repositoryId,oid:$oid,name:$name}){issue{number} linkedBranch{ref{name target{oid}}}}}' \
+              -F issueId="$issue_id" \
+              -F repositoryId="$repository_id" \
+              -F oid="$base_oid" \
+              -F name="$BRANCH_NAME"
+          )"
+
+          linked_issue="$(jq -r '.data.createLinkedBranch.issue.number // empty' <<< "$result")"
+          linked_ref="$(jq -r '.data.createLinkedBranch.linkedBranch.ref.name // empty' <<< "$result")"
+          linked_oid="$(jq -r '.data.createLinkedBranch.linkedBranch.ref.target.oid // empty' <<< "$result")"
+
+          test "$linked_issue" = "$ISSUE_NUMBER"
+          test "$linked_ref" = "$BRANCH_NAME"
+          test "$linked_oid" = "$base_oid"
+
+          echo "Created linked branch ${BRANCH_NAME} from ${BASE_REF} for issue #${ISSUE_NUMBER}."
