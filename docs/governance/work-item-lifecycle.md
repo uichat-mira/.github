@@ -80,7 +80,10 @@ When implementation or other substantive execution is explicitly authorized:
 
 1. keep the Issue open;
 2. move Project `Status` to `In Progress` when Project mutation capability is available;
-3. perform the work under the Issue, repository, testing, review, and environment contracts.
+3. when a repository work branch is needed and the repository supports Mira Start Work, create it through the trusted start-work path as a GitHub-native linked branch from the correct environment base;
+4. perform the work under the Issue, repository, testing, review, and environment contracts.
+
+The linked-branch step is part of normal work-start plumbing, not a separate maintainer chore. The automation may use the Issue number in its generated branch name as a lookup hint, but the branch name itself is not proof of the Issue contract. Consumers such as AI Review must verify the relation from GitHub server-side linked-branch data.
 
 Do not infer `In Progress` merely from a branch name, PR existence, commit, CI run, timestamp, or comment activity.
 
@@ -101,7 +104,9 @@ A blocked or stale Issue must not be closed as `not_planned` unless that outcome
 
 ## 7. Pull requests, review, and verification
 
-For the standard Mira branch model, an implementation PR normally references its work item without encoding acceptance into the merge action. Prefer a plain relation such as `Refs #123` for ordinary `feat/* -> dev` work.
+For the standard Mira branch model, a normal implementation PR should inherit its authoritative work-item relation from the GitHub-native linked branch created at work start. This server-side relation is the preferred trusted Task source for Organization AI Review on non-default development branches.
+
+PR prose such as `Refs #123`, `Closes #123`, a title reference, or any other PR-controlled text may remain useful for humans, but it is not by itself a trusted Task contract. Legacy or manually created branches may use an explicit GitHub server-side relation as a compatibility path; do not fall back to trusting PR text merely because the native linked-branch relation is absent.
 
 Do not rely on `Closes` / `Fixes` in a feature PR to mean that the Issue contract has been accepted. Mira commonly merges feature work into non-default `dev`, and acceptance may require evidence beyond merge.
 
