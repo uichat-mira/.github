@@ -96,6 +96,24 @@ jobs:
             exit 1
           fi
 
+      - name: Inspect lifecycle fields (read only)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo '--- Mira Development project fields ---'
+          gh project field-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --format json \
+            --jq '.fields[] | {name, type, id, options: (.options // [])}'
+
+          echo '--- Organization issue fields ---'
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "/orgs/${ORG}/issue-fields" \
+            --jq '.[] | {id, name, data_type, options: (.options // .single_select_options // [])}'
+
       - name: Lifecycle mutation hold
         shell: bash
         run: |
