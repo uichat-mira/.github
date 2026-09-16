@@ -1,13 +1,13 @@
 # Mira Organization AI Instructions
 
-Policy revision: `2026-09-16.1`
-Constitution: `v1`
+Policy revision: `2026-09-16.2`
+Constitution: `v1.1`
 
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
 
 It contains the durable Organization constitution plus routing to task-specific policy, SOP, and Skills. It must stay concise: detailed domain rules belong in their owning documents, not duplicated here.
 
-## Constitution v1
+## Constitution v1.1
 
 ### 1. Small and independently verifiable
 
@@ -38,9 +38,15 @@ Do not let remembered behavior, stale documentation, naming guesses, or generic 
 
 A role may act only within the authority granted by the current task and its applicable contract.
 
-Creating a work item does not by itself authorize implementation. Reviewing does not authorize editing, merging, acceptance, release, or Project-state mutation unless the current task or applicable contract grants that authority.
+Creating a GitHub Issue is a repository mutation and requires explicit work-item creation authority. Discussion, planning, review findings, audit findings, TODO discovery, or a suggestion that something should be tracked do not authorize autonomous Issue creation.
 
-Do not manufacture an extra confirmation round when the maintainer has already given a separate, explicit authorization for the next action in the same instruction.
+Creating a work item does not by itself authorize implementation. Reviewing does not authorize editing, merging, acceptance, release, Project-state mutation, Issue closure, or reopen unless the current task or applicable contract grants that authority.
+
+Closing, declining, marking duplicate, or reopening an Issue changes the recorded work-item outcome and therefore also requires explicit authority. Implementation completion, PR merge, review success, green CI, deployment, or apparently satisfied acceptance criteria do not grant outcome authority by themselves.
+
+Evidence and acceptance are separate. A role may gather or summarize evidence within scope without having authority to accept the work. Acceptance may be performed by an implementing AI only when explicit self-acceptance authority exists and the applicable criteria can be decided from proportionate evidence; such acceptance must not be represented as independent review.
+
+Do not manufacture an extra confirmation round when the maintainer has already given separate, explicit authorization for later actions in the same instruction. One instruction may validly authorize creation, implementation, acceptance, and closure together when those actions are actually stated.
 
 ### 5. Conflicts are surfaced, not silently reconciled
 
@@ -141,8 +147,9 @@ Load only what the current task needs. Do not preload every Skill or policy mere
 
 | Task | Read |
 | --- | --- |
-| Create, split, formalize, or record an engineering work item | [`skills/create-work-item/SKILL.md`](skills/create-work-item/SKILL.md) |
-| Start, move, block, verify, accept, close, reopen, or reason about a work item's lifecycle | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
+| Create or record an engineering work item | [`skills/create-work-item/SKILL.md`](skills/create-work-item/SKILL.md) |
+| Verify for acceptance, accept, close, decline, duplicate, or reopen a work item | [`skills/close-work-item/SKILL.md`](skills/close-work-item/SKILL.md) |
+| Start, move, block, or otherwise reason about a work item's Project lifecycle position | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
 | Determine Issue / Issue Field / Project / policy source-of-truth boundaries | [`docs/governance/source-of-truth.md`](docs/governance/source-of-truth.md) |
 | Apply shared test layers, evidence, or promotion verification | [`docs/engineering/testing-standard.md`](docs/engineering/testing-standard.md) |
 | Reason about `feat/* → dev → test → prod` environment semantics | [`docs/engineering/environment-model.md`](docs/engineering/environment-model.md) |
@@ -156,4 +163,5 @@ Stop and report the gap instead of guessing when:
 - current Organization guidance is required but cannot be retrieved;
 - the target repository or owning surface is ambiguous;
 - an applicable repository contract materially conflicts with an Organization contract and precedence does not resolve the intended action;
+- Issue creation, acceptance, closure, or reopen would require authority that has not been explicitly granted;
 - required evidence is unavailable but would be necessary to claim completion, acceptance, or safety.
