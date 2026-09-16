@@ -121,6 +121,13 @@ jobs:
             --format json \
             --jq '.items[] | select(.content.url == "https://github.com/uichat-mira/.github/issues/21")'
 
+          echo '--- Closed Issue #19 project item (read only) ---'
+          gh project item-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --limit 1000 \
+            --format json \
+            --jq '.items[] | select(.content.url == "https://github.com/uichat-mira/.github/issues/19")'
+
       - name: Lifecycle mutation hold
         shell: bash
         run: |
