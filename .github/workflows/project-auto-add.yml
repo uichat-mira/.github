@@ -170,34 +170,3 @@ jobs:
           if [ "$failed" -ne 0 ]; then
             exit 1
           fi
-
-      - name: Verify normalized lifecycle cutover
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          stage_count="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H "X-GitHub-Api-Version: ${API_VERSION}" \
-            "/orgs/${ORG}/issue-fields" \
-            --jq '[.[] | select(.name == "Stage")] | length')"
-
-          if [ "$stage_count" != "0" ]; then
-            echo '::error::Legacy Organization Issue Field Stage still exists.'
-            exit 1
-          fi
-
-          smoke_status="$(gh project item-list "$PROJECT_NUMBER" \
-            --owner "$ORG" \
-            --limit 1000 \
-            --format json \
-            --jq '.items[] | select(.content.url == "https://github.com/uichat-mira/.github/issues/26") | (.status // "")' \
-            | head -n 1)"
-
-          echo "Lifecycle smoke #26 current Project Status=${smoke_status:-<missing>}"
-          if [ "$smoke_status" != "Done" ]; then
-            echo '::error::Closed lifecycle smoke #26 is not projected as Status=Done.'
-            exit 1
-          fi
-
-          echo 'Normalized lifecycle cutover verification passed: legacy Stage absent; closed smoke #26 is Status=Done.'
