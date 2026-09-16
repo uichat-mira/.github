@@ -34,6 +34,8 @@ If implementation changes the agreed scope, update the Issue rather than leaving
 
 Do not maintain a prose copy of Project Status, Priority, Effort, dates, assignees, linked PRs, or other metadata that GitHub already owns elsewhere.
 
+Issue truth and Issue mutation authority are different concepts. The Issue is authoritative for its current contract/outcome, but creating, accepting, closing, declining, duplicating, or reopening it still requires authority from the current maintainer instruction or applicable contract. Observable completion evidence does not grant that authority by itself.
+
 ## 3. Organization Issue Fields — structured management metadata
 
 Organization Issue Fields own cross-repository structured metadata such as:
@@ -53,6 +55,7 @@ The `uichat-mira/.github` repository is the source of truth for organization-wid
 
 Examples:
 
+- work-item creation and closure authority/procedure;
 - work-item lifecycle;
 - environment model;
 - testing standard;
@@ -84,11 +87,15 @@ Pull requests, review results, CI checks, builds, and test runs are evidence abo
 
 They do not become a second work-item ledger and do not automatically accept an Issue. A merge or green check proves only what that event/check actually establishes.
 
+Evidence can support an authorized acceptance decision; it does not create acceptance or closure authority.
+
 ## 7. Environment state
 
 The branch/environment model `feat/* -> dev -> test -> prod` owns environment position and promotion semantics.
 
 Project Status must not be used as an alias for `dev`, `test`, or `prod`. Environment evidence remains attached to the exact branch, deployment, version, or release that was actually verified.
+
+Closing an Issue does not itself authorize environment promotion or release.
 
 ## 8. mira.tomz.io — public projection
 
@@ -114,6 +121,8 @@ Use the owner of that concept:
 - public presentation -> website.
 
 Then repair the stale projection instead of forcing one concept to imitate another.
+
+Authority conflicts are resolved by the instruction-priority model in `AGENTS.md`, not by whichever source currently looks most complete.
 
 ## Working rule
 
