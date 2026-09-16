@@ -5,9 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this form for implementation, migration, maintenance, infrastructure, and other engineering work.
+        Use this form only when creating a work item has been explicitly authorized. Discussion, review findings, audit findings, TODO discovery, or a suggestion that something should be tracked do not by themselves authorize Issue creation.
         Keep the Issue focused on the work contract. Project Status, Priority/Effort/dates, assignees, linked PRs, and other GitHub-owned metadata/relationships should not be duplicated here.
         Normal Organization intake adds open work items to Mira Development; lifecycle position is managed by native Project Status, not by prose in this Issue.
+        Creating this Issue does not by itself authorize implementation, acceptance, closure, release, or other later actions.
 
   - type: textarea
     id: goal
@@ -49,7 +50,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance criteria
-      description: What must be true before this work item can be considered complete?
+      description: What must be true before this work item can be considered complete? Criteria define evidence requirements; they do not grant acceptance or closure authority.
       placeholder: Use checkable outcomes rather than implementation intentions.
     validations:
       required: true
