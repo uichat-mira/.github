@@ -193,10 +193,10 @@ jobs:
             --owner "$ORG" \
             --limit 1000 \
             --format json \
-            --jq '.items[].content.url // empty' \
+            --jq '.items[] | [(.content.url // ""), (.status // "")] | @tsv' \
             | sort -u > "$project_items_file"
 
-          while IFS= read -r issue_url; do
+          while IFS=$'\t' read -r issue_url native_status; do
             [ -n "${issue_url:-}" ] || continue
             issue_path="${issue_url#https://github.com/}"
             issue_owner="${issue_path%%/*}"
@@ -215,7 +215,7 @@ jobs:
               --jq ".[] | select(.issue_field_id == ${stage_field_id}) | (.single_select_option.name // .value // empty)" \
               | head -n 1)"
 
-            printf '%s\t%s\n' "$issue_url" "${stage_value:-<empty>}"
+            printf '%s\tStatus=%s\tStage=%s\n' "$issue_url" "${native_status:-<empty>}" "${stage_value:-<empty>}"
           done < "$project_items_file"
 
           echo '--- End legacy Stage snapshot ---'
