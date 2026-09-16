@@ -6,8 +6,8 @@ body:
     attributes:
       value: |
         Use this form for implementation, migration, maintenance, infrastructure, and other engineering work.
-        Keep the Issue focused on the work contract. Management metadata and GitHub relationships are maintained through their owning fields/views and should not be duplicated here.
-        During the current lifecycle transition hold, do not set or infer Stage / Project Status as part of Issue creation unless the maintainer explicitly asks for that mutation.
+        Keep the Issue focused on the work contract. Project Status, Priority/Effort/dates, assignees, linked PRs, and other GitHub-owned metadata/relationships should not be duplicated here.
+        Normal Organization intake adds open work items to Mira Development; lifecycle position is managed by native Project Status, not by prose in this Issue.
 
   - type: textarea
     id: goal

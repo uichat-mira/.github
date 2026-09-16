@@ -1,8 +1,6 @@
 # Source of Truth
 
-Mira uses different sources of truth for different kinds of information. The goal is to avoid one document pretending to be authoritative for everything.
-
-> **Lifecycle transition hold:** lifecycle field ownership is currently being re-audited. This document does not authorize mutation of Organization Issue Field `Stage` or Project `Status`. For any move / acceptance / closure / reopen decision, follow [`work-item-lifecycle.md`](work-item-lifecycle.md) first and leave Stage/Status unchanged unless the maintainer explicitly requests a lifecycle-field mutation.
+Mira uses different sources of truth for different kinds of information. The goal is to avoid one surface pretending to be authoritative for everything.
 
 ## 1. Code and runtime state
 
@@ -18,55 +16,81 @@ the real repository, workflow configuration, and deployed runtime state are auth
 
 Documentation must not override observable reality.
 
-## 2. GitHub Issue — work-item truth
+## 2. GitHub Issue — work-item contract and outcome
 
-An Issue is the engineering source of truth for a work item.
+An Issue is the engineering source of truth for one work item.
 
 It should carry the information needed to understand and accept that unit of work, including as appropriate:
 
 - problem or goal;
-- scope;
+- scope and non-goals;
 - constraints;
 - acceptance criteria;
-- decisions;
-- current work-item context needed to interpret the contract;
-- links to implementation or verification evidence.
+- decisions that change the contract;
+- links to implementation or verification evidence;
+- final open/closed state and close reason.
 
-If the implementation changes the agreed scope, update the Issue rather than leaving the decision only in chat.
+If implementation changes the agreed scope, update the Issue rather than leaving the decision only in chat, a PR, or a Project field.
 
-During the lifecycle transition hold, do not maintain a prose copy of Project Stage/Status in the Issue body merely to compensate for stale lifecycle metadata.
+Do not maintain a prose copy of Project Status, Priority, Effort, dates, assignees, linked PRs, or other metadata that GitHub already owns elsewhere.
 
-## 3. Organization docs — policy and SOP truth
+## 3. Organization Issue Fields — structured management metadata
+
+Organization Issue Fields own cross-repository structured metadata such as:
+
+- Priority;
+- Effort;
+- Start date;
+- Target date.
+
+Their current field values are authoritative for those metadata values. Do not duplicate them in the Issue body or create competing Project-only copies without a demonstrated need.
+
+Organization Issue Fields are not the work-item lifecycle. Lifecycle position belongs to native Project `Status` under [`work-item-lifecycle.md`](work-item-lifecycle.md).
+
+## 4. Organization docs — policy and SOP truth
 
 The `uichat-mira/.github` repository is the source of truth for organization-wide engineering policy and reusable SOPs.
 
 Examples:
 
+- work-item lifecycle;
 - environment model;
+- testing standard;
 - repository migration procedure;
 - release policy;
 - shared development conventions.
 
 Repository-specific rules may extend these documents. If a repository must diverge, document the exception locally and explain why.
 
-## 4. GitHub Project — management view
+## 5. GitHub Project — management projection
 
-GitHub Project is a management projection over work items.
+`Mira Development` is a management projection over work items.
 
-It may organize Issues by:
+Its native `Status` answers only the coarse workflow-position question:
 
-- priority;
-- owner;
-- lifecycle/workflow fields;
-- milestone;
-- release;
-- migration status.
+```text
+Todo | In Progress | Done
+```
 
-Project fields are useful for planning and visibility, but they must not silently replace the Issue's scope or acceptance criteria.
+It may also surface Organization Issue Fields and GitHub-owned relationships such as assignees, linked pull requests, repository, milestone, timestamps, and sub-issue progress.
 
-During the lifecycle transition hold, stale Stage/Status values are tolerated; do not repair them by inference.
+Project Status must not silently replace Issue scope or acceptance criteria, and it must not duplicate CI/review/environment state. `Done` means the Project item is inactive; the Issue close reason determines whether work was completed, not planned, or duplicated.
 
-## 5. mira.tomz.io — public projection
+If Project Status is stale while the Issue/runtime evidence is clear, repair the management projection according to the lifecycle contract. Do not rewrite technical reality or Issue acceptance to make the board look consistent.
+
+## 6. Pull requests, review, and CI — implementation evidence
+
+Pull requests, review results, CI checks, builds, and test runs are evidence about implementation and verification.
+
+They do not become a second work-item ledger and do not automatically accept an Issue. A merge or green check proves only what that event/check actually establishes.
+
+## 7. Environment state
+
+The branch/environment model `feat/* -> dev -> test -> prod` owns environment position and promotion semantics.
+
+Project Status must not be used as an alias for `dev`, `test`, or `prod`. Environment evidence remains attached to the exact branch, deployment, version, or release that was actually verified.
+
+## 8. mira.tomz.io — public projection
 
 The website is the public projection of Mira's state, direction, development journal, and selected roadmap information.
 
@@ -78,26 +102,30 @@ Public content should be derived from verified internal state rather than becomi
 
 When two sources disagree, first identify what kind of truth is in conflict.
 
-Use this order:
+Use the owner of that concept:
 
-1. actual code/config/runtime for current technical reality;
-2. Issue for the agreed state of a specific work item;
-3. organization/repository docs for policy and procedure;
-4. Project for management presentation;
-5. website for public presentation.
+- current technical reality -> code / configuration / workflow / runtime;
+- work-item contract and outcome -> Issue;
+- structured planning metadata -> Organization Issue Fields;
+- Organization procedure -> Organization docs;
+- management workflow position -> Project Status;
+- implementation/verification evidence -> PR / review / CI;
+- environment position -> branch/deployment/release evidence;
+- public presentation -> website.
 
-Then repair the stale projection instead of forcing reality to match an outdated document.
-
-During the lifecycle transition hold, the normal "repair stale projection" rule does **not** authorize inferred Stage/Status writes; lifecycle metadata waits for the accepted replacement model unless the maintainer explicitly directs a mutation.
+Then repair the stale projection instead of forcing one concept to imitate another.
 
 ## Working rule
 
 ```text
-Issue = work item
-Project = management view
-mira.tomz.io = public projection
-.github/docs = organization policy and SOP
-repo/config/runtime = current technical reality
+Issue              = work-item contract + outcome
+Project Status     = Todo / In Progress / Done management position
+Org Issue Fields   = Priority / Effort / dates and similar metadata
+PR / Review / CI   = implementation + verification evidence
+feat/dev/test/prod = environment position
+.github/docs       = Organization policy and SOP
+repo/config/runtime= current technical reality
+mira.tomz.io       = public projection
 ```
 
 Each layer has one job. Avoid maintaining the same decision independently in several places.
