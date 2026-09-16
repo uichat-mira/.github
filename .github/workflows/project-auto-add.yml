@@ -170,3 +170,59 @@ jobs:
           if [ "$failed" -ne 0 ]; then
             exit 1
           fi
+
+      - name: Snapshot and retire legacy Stage field
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          issue_fields_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "/orgs/${ORG}/issue-fields")"
+          stage_field_id="$(jq -r '.[] | select(.name == "Stage") | .id' <<<"$issue_fields_json" | head -n 1)"
+
+          if [ -z "${stage_field_id:-}" ] || [ "$stage_field_id" = "null" ]; then
+            echo 'Legacy Stage field is already retired.'
+            exit 0
+          fi
+
+          echo "--- Legacy Stage retirement snapshot (field id: $stage_field_id) ---"
+          project_items_file="$(mktemp)"
+          gh project item-list "$PROJECT_NUMBER" \
+            --owner "$ORG" \
+            --limit 1000 \
+            --format json \
+            --jq '.items[] | [(.content.url // ""), (.status // "")] | @tsv' \
+            | sort -u > "$project_items_file"
+
+          while IFS=$'\t' read -r issue_url native_status; do
+            [ -n "${issue_url:-}" ] || continue
+            issue_path="${issue_url#https://github.com/}"
+            issue_owner="${issue_path%%/*}"
+            remainder="${issue_path#*/}"
+            issue_repo="${remainder%%/*}"
+            issue_number="${issue_url##*/}"
+
+            if [ "$issue_owner" != "$ORG" ] || ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+              continue
+            fi
+
+            stage_value="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "/repos/${issue_owner}/${issue_repo}/issues/${issue_number}/issue-field-values" \
+              --jq ".[] | select(.issue_field_id == ${stage_field_id}) | (.single_select_option.name // .value // empty)" \
+              | head -n 1)"
+
+            printf '%s\tStatus=%s\tStage=%s\n' "$issue_url" "${native_status:-<empty>}" "${stage_value:-<empty>}"
+          done < "$project_items_file"
+
+          echo '--- End legacy Stage snapshot ---'
+          echo "Deleting Organization Issue Field Stage (id=$stage_field_id)"
+          gh api \
+            --method DELETE \
+            -H 'Accept: application/vnd.github+json' \
+            -H "X-GitHub-Api-Version: ${API_VERSION}" \
+            "/orgs/${ORG}/issue-fields/${stage_field_id}"
+          echo 'Legacy Stage field retired.'
