@@ -114,19 +114,12 @@ jobs:
             "/orgs/${ORG}/issue-fields" \
             --jq '.[] | {id, name, data_type, options: (.options // .single_select_options // [])}'
 
-          echo '--- Issue #21 project item (read only) ---'
+          echo '--- Project item lifecycle snapshot (read only) ---'
           gh project item-list "$PROJECT_NUMBER" \
             --owner "$ORG" \
             --limit 1000 \
             --format json \
-            --jq '.items[] | select(.content.url == "https://github.com/uichat-mira/.github/issues/21")'
-
-          echo '--- Closed Issue #19 project item (read only) ---'
-          gh project item-list "$PROJECT_NUMBER" \
-            --owner "$ORG" \
-            --limit 1000 \
-            --format json \
-            --jq '.items[] | select(.content.url == "https://github.com/uichat-mira/.github/issues/19")'
+            --jq '.items[] | {url: (.content.url // ""), title, status: (.status // "")}'
 
       - name: Lifecycle mutation hold
         shell: bash
