@@ -1,23 +1,11 @@
 # Mira Organization AI Instructions
 
-Policy revision: `2026-09-15.1`
+Policy revision: `2026-09-16.1`
 Constitution: `v1`
 
 This file is the canonical AI collaboration entry for repositories owned by the `uichat-mira` GitHub Organization.
 
 It contains the durable Organization constitution plus routing to task-specific policy, SOP, and Skills. It must stay concise: detailed domain rules belong in their owning documents, not duplicated here.
-
-## Temporary lifecycle transition hold
-
-The Organization is re-auditing the work-item lifecycle model. Until that replacement contract is explicitly accepted:
-
-- active Issues and PRs continue under their existing task, repository, review, testing, and environment contracts;
-- do not reinterpret acceptance criteria or force in-flight work to migrate lifecycle metadata;
-- do not mutate Organization Issue Field `Stage` or Project `Status` unless the maintainer explicitly requests that mutation for the specific work item;
-- do not infer lifecycle transitions from PR merge, branch, CI, deployment, Issue close reason, comments, or timestamps;
-- Project intake may keep work discoverable, but lifecycle metadata may remain stale during the hold.
-
-Before creating, moving, accepting, closing, or reopening a work item, load the routed work-item guidance below. The transition hold is a compatibility guard, not the final Status/Stage design.
 
 ## Constitution v1
 
@@ -32,8 +20,9 @@ A task is not complete because code changed. It is complete only when the agreed
 Do not maintain the same decision independently in several places.
 
 - code / configuration / workflow / runtime describe current technical reality;
-- GitHub Issue owns the work-item contract;
-- GitHub Project is a management projection;
+- GitHub Issue owns the work-item contract and outcome;
+- native GitHub Project `Status` owns coarse management workflow position;
+- Organization Issue Fields own structured planning metadata such as Priority, Effort, and dates;
 - Organization docs own Organization policy and reusable SOPs;
 - repository docs own repository-specific rules and exceptions.
 
@@ -49,7 +38,9 @@ Do not let remembered behavior, stale documentation, naming guesses, or generic 
 
 A role may act only within the authority granted by the current task and its applicable contract.
 
-Creating a work item does not authorize implementation. Reviewing does not authorize editing, merging, acceptance, release, or Project-state mutation unless a separate contract explicitly grants that authority.
+Creating a work item does not by itself authorize implementation. Reviewing does not authorize editing, merging, acceptance, release, or Project-state mutation unless the current task or applicable contract grants that authority.
+
+Do not manufacture an extra confirmation round when the maintainer has already given a separate, explicit authorization for the next action in the same instruction.
 
 ### 5. Conflicts are surfaced, not silently reconciled
 
@@ -134,10 +125,13 @@ A higher-priority instruction can change the requested outcome, but it does not 
 For what currently exists or runs, follow [`docs/governance/source-of-truth.md`](docs/governance/source-of-truth.md). In short:
 
 1. actual code / configuration / workflow / runtime for current technical reality;
-2. GitHub Issue for the agreed state of a specific work item;
-3. Organization and repository docs for policy and procedure;
-4. GitHub Project for management presentation;
-5. `mira.tomz.io` for public presentation.
+2. GitHub Issue for the agreed contract and outcome of a specific work item;
+3. Organization Issue Fields for their structured planning values;
+4. Organization and repository docs for policy and procedure;
+5. GitHub Project `Status` for management workflow position;
+6. PR/review/CI for implementation and verification evidence;
+7. environment/deployment/release state for promotion reality;
+8. `mira.tomz.io` for public presentation.
 
 Do not confuse instruction priority with factual truth.
 
@@ -148,8 +142,8 @@ Load only what the current task needs. Do not preload every Skill or policy mere
 | Task | Read |
 | --- | --- |
 | Create, split, formalize, or record an engineering work item | [`skills/create-work-item/SKILL.md`](skills/create-work-item/SKILL.md) |
-| Move, verify, accept, close, reopen, or reason about work-item lifecycle metadata | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
-| Determine work-item / Project / policy source-of-truth boundaries | [`docs/governance/source-of-truth.md`](docs/governance/source-of-truth.md) |
+| Start, move, block, verify, accept, close, reopen, or reason about a work item's lifecycle | [`docs/governance/work-item-lifecycle.md`](docs/governance/work-item-lifecycle.md) |
+| Determine Issue / Issue Field / Project / policy source-of-truth boundaries | [`docs/governance/source-of-truth.md`](docs/governance/source-of-truth.md) |
 | Apply shared test layers, evidence, or promotion verification | [`docs/engineering/testing-standard.md`](docs/engineering/testing-standard.md) |
 | Reason about `feat/* → dev → test → prod` environment semantics | [`docs/engineering/environment-model.md`](docs/engineering/environment-model.md) |
 | Perform Organization AI PR Review | [`ai-review/POLICY.md`](ai-review/POLICY.md) and [`ai-review/OUTPUT-CONTRACT.md`](ai-review/OUTPUT-CONTRACT.md) |
