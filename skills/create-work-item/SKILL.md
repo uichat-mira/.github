@@ -1,13 +1,31 @@
 ---
 name: create-work-item
-description: Create small, independently verifiable Mira Organization engineering work items as GitHub Issues while preserving the Organization source-of-truth model.
+description: Create small, independently verifiable Mira Organization engineering work items as GitHub Issues while preserving the Organization source-of-truth model and explicit creation authority.
 ---
 
 # Create Work Item
 
-Use this Skill when a maintainer asks to create, split, formalize, or record an engineering task for a repository under `uichat-mira`.
+Use this Skill when a maintainer explicitly asks to **create or record** an engineering work item for a repository under `uichat-mira`.
 
 The output is a **GitHub Issue work-item contract**. It is not a second ledger, an implementation plan pretending to be a contract, or a Project lifecycle update.
+
+## Creation authority gate
+
+Creating an Issue is a repository mutation. Do not create one unless the current maintainer instruction explicitly authorizes work-item creation.
+
+The following are **not** creation authority by themselves:
+
+- discussing how work could be split or tracked;
+- brainstorming a roadmap or backlog;
+- discovering a bug, debt item, or risk during implementation;
+- producing a review finding or audit recommendation;
+- saying something "should be tracked", "could be a card", or "may need follow-up" without asking to create it;
+- finding an unfinished TODO or stale document;
+- having enough information to write a good Issue.
+
+When authority is absent, describe the proposed work item or recommend formalizing it, but do not mutate GitHub.
+
+A single explicit instruction may authorize one Issue or a batch. Do not silently expand one requested Issue into several created Issues merely because the work could be split; propose the split first unless the instruction explicitly authorizes creating the resulting set.
 
 ## Core principles
 
@@ -36,13 +54,15 @@ When a newer explicit maintainer decision conflicts with written guidance, surfa
 
 ## Procedure
 
-### 1. Identify the owning repository
+### 1. Confirm creation authority and identify the owning repository
 
-Determine which repository owns the behavior, contract, runtime, documentation, or infrastructure being changed.
+First confirm that the current instruction actually authorizes creating the Issue. Planning or describing a possible Issue is not enough.
+
+Then determine which repository owns the behavior, contract, runtime, documentation, or infrastructure being changed.
 
 Use current repository reality rather than naming guesses. Read relevant repository-local `AGENTS.md`, policy/docs, active contracts, and branch rules when they materially affect scope or verification.
 
-For work spanning repositories, split only when there are distinct independently implementable and verifiable outcomes. Cross-link separate work items and identify the contract owner when useful.
+For work spanning repositories, split only when there are distinct independently implementable and verifiable outcomes. Cross-link separate work items and identify the contract owner when useful. If creation authority covered only one work item, propose additional split Issues instead of creating them automatically.
 
 ### 2. Check for existing work
 
@@ -53,7 +73,9 @@ Before creating a new Issue, search the owning repository and, when useful, the 
 - the same contract change;
 - an active parent or child work item that already owns the scope.
 
-If an existing Issue already owns the outcome, use or update it instead of creating a duplicate.
+If an existing Issue already owns the outcome, use or update it instead of creating a duplicate. Do not create a second Issue merely because the existing title or wording is imperfect.
+
+If changing the existing Issue contract would itself be a material mutation beyond the current authority, report that instead of silently rewriting it.
 
 ### 3. Decide whether the work item is small enough
 
@@ -68,6 +90,8 @@ Split the work before creation when one proposed Issue contains outcomes that ca
 Keep one Issue when the changes are tightly coupled and one acceptance decision naturally covers them.
 
 A useful test is: **Can a maintainer make one clear accept / return decision from the evidence produced by this Issue?** If not, narrow or split it.
+
+Do not create umbrella/meta tracking Issues by default as a substitute for independently verifiable work. Use one only when the maintainer explicitly wants a coordination/tracking contract that has a meaningful acceptance boundary of its own.
 
 ### 4. Write the Organization Work Item contract
 
@@ -148,13 +172,19 @@ Do not manually set a second lifecycle field or write "current status" into the 
 
 The Issue contract must remain meaningful even if the management projection is temporarily stale.
 
-### 6. Creation and execution authority are separate
+Do not set Priority, Effort, dates, assignees, milestone, Project Status, or other management metadata unless the current instruction separately grants that metadata decision or an applicable automation owns it.
 
-Creating a work item **by itself** does not authorize implementation, branch creation, merge, deployment, release, acceptance, or other side effects.
+### 6. Creation and later authority are separate
 
-However, do not manufacture an extra confirmation round when the current maintainer instruction already contains a separate, explicit authorization for the next action. For example, "开一张卡然后开始施工" contains both creation and execution authority; create the Issue first, then follow the lifecycle and repository contracts for the authorized work.
+Creating a work item **by itself** does not authorize implementation, branch creation, merge, deployment, release, acceptance, closure, reopen, or other side effects.
+
+However, do not manufacture an extra confirmation round when the current maintainer instruction already contains separate, explicit authority for the next action. For example, "开一张卡然后开始施工" contains both creation and execution authority; create the Issue first, then follow the lifecycle and repository contracts for the authorized work.
+
+Likewise, "建卡，做完后按验收标准自验收并关闭" may explicitly grant creation, implementation, acceptance, and closure in one instruction. Do not infer those later permissions when they were not stated.
 
 When implementation begins under explicit authority, Project `Status` should move to `In Progress` according to [`../../docs/governance/work-item-lifecycle.md`](../../docs/governance/work-item-lifecycle.md). If the current tool cannot mutate Project Status, do not create a shadow field; treat that as a management-projection gap rather than an engineering blocker.
+
+Closing or reopening later must follow [`../close-work-item/SKILL.md`](../close-work-item/SKILL.md).
 
 This Skill must not be invoked by an independent AI reviewer to autonomously convert review findings into follow-up Issues. Review findings remain advisory until a maintainer explicitly decides to formalize work.
 
@@ -162,6 +192,7 @@ This Skill must not be invoked by an independent AI reviewer to autonomously con
 
 Before submitting the Issue, confirm:
 
+- explicit creation authority exists;
 - the owning repository is correct;
 - no existing Issue already owns the same outcome;
 - there is one coherent acceptance decision;
@@ -170,7 +201,8 @@ Before submitting the Issue, confirm:
 - required evidence is explicit and proportionate;
 - current facts were not inferred from stale docs when better evidence exists;
 - GitHub-owned metadata/relationships are not duplicated in prose;
-- creation has not been mistaken for implementation authority;
+- no unrequested management metadata is being assigned;
+- creation has not been mistaken for implementation, acceptance, or closure authority;
 - no unrelated implementation or cleanup has been smuggled into the work item.
 
-If these checks fail, refine or split the work item before creating it.
+If these checks fail, refine or split the proposed work item, or report the missing authority, before creating it.
