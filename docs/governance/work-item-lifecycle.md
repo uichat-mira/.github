@@ -2,7 +2,9 @@
 
 Status: active Organization guidance.
 
-This document defines the lifecycle of Mira engineering work items. The model is intentionally small: one GitHub Issue contract, one native Project `Status`, and separate evidence/environment systems that keep their own meanings.
+This document defines the lifecycle position of Mira engineering work items. The model is intentionally small: one GitHub Issue contract, one native Project `Status`, and separate evidence/environment systems that keep their own meanings.
+
+Use [`../../skills/create-work-item/SKILL.md`](../../skills/create-work-item/SKILL.md) for Issue creation procedure and authority checks. Use [`../../skills/close-work-item/SKILL.md`](../../skills/close-work-item/SKILL.md) for acceptance, closure, decline, duplicate, and reopen procedure.
 
 ## 1. One lifecycle field
 
@@ -64,6 +66,8 @@ Do not create separate Project lifecycle states merely to restate close reasons 
 
 Creating a work item means creating the Issue contract in the repository that owns the work.
 
+Issue creation requires explicit creation authority. Discussion, review findings, audit findings, TODO discovery, or a recommendation that something should be tracked do not authorize autonomous Issue creation.
+
 Normal Organization intake adds open Issues to `Mira Development`. Current live Project behavior assigns newly added items native `Status=Todo`.
 
 The creator should not duplicate Status, Priority, Effort, dates, assignees, linked PRs, or similar management/system metadata inside the Issue body.
@@ -93,6 +97,8 @@ Record the blocker on the Issue, using GitHub issue dependencies when another Is
 
 Do not create a parallel `Blocked` lifecycle column merely to make the board more descriptive.
 
+A blocked or stale Issue must not be closed as `not_planned` unless that outcome has been explicitly decided.
+
 ## 7. Pull requests, review, and verification
 
 For the standard Mira branch model, an implementation PR normally references its work item without encoding acceptance into the merge action. Prefer a plain relation such as `Refs #123` for ordinary `feat/* -> dev` work.
@@ -101,7 +107,7 @@ Do not rely on `Closes` / `Fixes` in a feature PR to mean that the Issue contrac
 
 A PR merge, AI review verdict, human review, `Mira Gate`, test run, build, device check, deployment, or smoke result is evidence. It becomes acceptance evidence only to the extent required by the current Issue contract.
 
-While required verification or acceptance is unresolved, keep the Issue open. If the work remains actively being carried through, its Project Status remains `In Progress`.
+Evidence does not grant acceptance authority. While required verification or acceptance is unresolved, keep the Issue open. If the work remains actively being carried through, its Project Status remains `In Progress`.
 
 ## 8. Environment promotion
 
@@ -111,31 +117,40 @@ If the Issue acceptance criteria require test- or production-environment evidenc
 
 If promotion/release is an independently verifiable outcome owned by a separate work item, the implementation Issue may close once its own contract is accepted. Do not keep feature Issues artificially alive merely to duplicate another release work item.
 
+Closing an implementation Issue does not authorize promotion or release unless that authority is separately granted.
+
 ## 9. Acceptance and closure
 
-Acceptance is a distinct authority decision against the Issue contract.
+Acceptance is a distinct authority decision against the Issue contract. Closing is a result mutation, not an automatic consequence of implementation or verification.
 
-For accepted work:
+Follow [`../../skills/close-work-item/SKILL.md`](../../skills/close-work-item/SKILL.md) before mutating Issue state or close reason.
+
+For an authorized `completed` outcome:
 
 1. verify the exact acceptance criteria against current evidence;
-2. record the material evidence/decision on the Issue or linked PR when useful for audit;
-3. close the Issue with `state_reason=completed`.
+2. identify any explicit exceptions or accepted validation gaps;
+3. record the material evidence/decision on the Issue or linked PR when useful for audit;
+4. close the Issue with `state_reason=completed`.
 
 Current live Project behavior moves a closed Issue to native `Status=Done`; do not add a second completion reconciler when the native workflow already owns that edge.
 
-An implementing AI may self-accept only when the maintainer explicitly authorizes acceptance and objective, proportionate evidence can decide the criteria. Self-acceptance must not be presented as independent review.
+An implementing AI may self-accept only when the maintainer explicitly authorizes self-acceptance and objective, proportionate evidence can decide the criteria. Self-acceptance must be identified as delivery/self-acceptance, not independent review.
 
-For work intentionally abandoned or superseded, close with the appropriate non-completed reason. Project `Done` still means the item is inactive; the Issue close reason explains why.
+If evidence is complete but acceptance/closure authority is absent, keep the Issue open and report that the contract appears ready for an authorized acceptance decision.
+
+For work intentionally abandoned or superseded, use `not_planned` or `duplicate` only when that outcome is explicitly authorized and supported. Project `Done` still means the item is inactive; the Issue close reason explains why.
 
 ## 10. Reopening
 
-Reopening is the one lifecycle edge that current live Project behavior does not repair automatically: an Issue can be `open` with `state_reason=reopened` while its Project Status remains `Done`.
+Reopening is an outcome mutation and requires explicit reopen authority. It does not by itself authorize resumed implementation.
+
+Current live Project behavior does not repair the reopen edge automatically: an Issue can be `open` with `state_reason=reopened` while its Project Status remains `Done`.
 
 When an Issue is reopened:
 
-1. reopen the Issue and update its contract if scope/acceptance changed materially;
+1. update its contract if scope/acceptance changed materially;
 2. restore Project Status to `Todo` by default;
-3. if the maintainer explicitly authorizes immediate resumed execution, use `In Progress` instead.
+3. if the same maintainer instruction explicitly authorizes immediate resumed execution, use `In Progress` instead.
 
 Organization automation may repair only the unambiguous stale projection `open + state_reason=reopened + Status=Done -> Status=Todo`. That repair follows explicit GitHub state; it must not infer broader lifecycle intent.
 
@@ -143,4 +158,4 @@ Organization automation may repair only the unambiguous stale projection `open +
 
 Work items created or started under the 2026-09 transition hold keep their existing Issue/PR/repository contracts. Normalization changes management projection only; it does not rewrite their scope, acceptance criteria, review conclusions, CI evidence, or environment state.
 
-Do not seed native Status by mechanically translating legacy Stage values. Repair only states supported by current authoritative evidence. Once migration is verified, remove the legacy `Stage` field so humans and AIs see one lifecycle vocabulary.
+Do not seed native Status by mechanically translating legacy Stage values. Repair only states supported by current authoritative evidence. The legacy `Stage` field has been retired after verified cutover; do not recreate it as a compatibility layer.
