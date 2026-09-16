@@ -96,32 +96,77 @@ jobs:
             exit 1
           fi
 
-      - name: Inspect lifecycle fields (read only)
+      - name: Repair reopened Issues left at Done
         shell: bash
         run: |
           set -euo pipefail
 
-          echo '--- Mira Development project fields ---'
-          gh project field-list "$PROJECT_NUMBER" \
-            --owner "$ORG" \
-            --format json \
-            --jq '.fields[] | {name, type, id, options: (.options // [])}'
+          project_id="$(gh project view "$PROJECT_NUMBER" --owner "$ORG" --format json --jq '.id')"
+          fields_json="$(gh project field-list "$PROJECT_NUMBER" --owner "$ORG" --format json)"
+          status_field_id="$(jq -r '.fields[] | select(.name == "Status") | .id' <<<"$fields_json" | head -n 1)"
+          todo_option_id="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' <<<"$fields_json" | head -n 1)"
 
-          echo '--- Organization issue fields ---'
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H "X-GitHub-Api-Version: ${API_VERSION}" \
-            "/orgs/${ORG}/issue-fields" \
-            --jq '.[] | {id, name, data_type, options: (.options // .single_select_options // [])}'
+          if [ -z "${project_id:-}" ] || [ -z "${status_field_id:-}" ] || [ -z "${todo_option_id:-}" ] || \
+             [ "$project_id" = "null" ] || [ "$status_field_id" = "null" ] || [ "$todo_option_id" = "null" ]; then
+            echo '::error::Could not resolve Mira Development Project / Status / Todo identities.'
+            exit 1
+          fi
 
-          echo '--- Project item lifecycle snapshot (read only) ---'
+          candidates_file="$(mktemp)"
           gh project item-list "$PROJECT_NUMBER" \
             --owner "$ORG" \
             --limit 1000 \
+            --query 'is:issue is:open status:Done' \
             --format json \
-            --jq '.items[] | {url: (.content.url // ""), title, status: (.status // "")}'
+            --jq '.items[] | [.id, (.content.url // "")] | @tsv' \
+            > "$candidates_file"
 
-      - name: Lifecycle mutation hold
-        shell: bash
-        run: |
-          echo 'Lifecycle transition hold active: Project intake runs, but Stage/Status lifecycle fields are not mutated by this workflow.'
+          repaired=0
+          skipped=0
+          failed=0
+
+          while IFS=$'\t' read -r item_id issue_url; do
+            [ -n "${item_id:-}" ] || continue
+            [ -n "${issue_url:-}" ] || continue
+
+            issue_path="${issue_url#https://github.com/}"
+            issue_owner="${issue_path%%/*}"
+            remainder="${issue_path#*/}"
+            issue_repo="${remainder%%/*}"
+            issue_number="${issue_url##*/}"
+
+            if [ "$issue_owner" != "$ORG" ] || ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+              echo "::error::Unexpected Issue URL from project: $issue_url"
+              failed=$((failed + 1))
+              continue
+            fi
+
+            state_reason="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "/repos/${issue_owner}/${issue_repo}/issues/${issue_number}" \
+              --jq '.state_reason // ""')"
+
+            if [ "$state_reason" != "reopened" ]; then
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            echo "Repairing reopened $issue_url from Status=Done to Status=Todo"
+            if gh project item-edit \
+              --id "$item_id" \
+              --project-id "$project_id" \
+              --field-id "$status_field_id" \
+              --single-select-option-id "$todo_option_id" >/dev/null; then
+              repaired=$((repaired + 1))
+            else
+              echo "::error::Failed to repair Project Status for $issue_url"
+              failed=$((failed + 1))
+            fi
+          done < "$candidates_file"
+
+          echo "Reopen Status repair summary: repaired=$repaired skipped=$skipped failed=$failed"
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
