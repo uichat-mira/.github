@@ -36,6 +36,46 @@ Every work item must satisfy both rules:
 
 Small does not mean artificially fragmented. Keep changes together when they form one atomic behavior and cannot be meaningfully accepted separately.
 
+## Work-item identifier and title
+
+Every new work item uses the canonical Organization convention from [`../../docs/governance/work-item-identifiers.md`](../../docs/governance/work-item-identifiers.md):
+
+```text
+[DOMAIN-NNN] Short human-readable title
+```
+
+The semantic ID lives in the Issue **title** for v1. Do not add a duplicate Project or custom field to mirror it.
+
+### 1. Select the domain by outcome, not repository
+
+Choose the domain from the registered registry by the work item's **primary outcome / contract owner**, not by the repository that happens to host the Issue. A repository name alone never determines the domain.
+
+### 2. Allocate the Organization-wide next sequence
+
+1. search current Organization Issues across repositories for conforming IDs in that domain;
+2. take the highest **simple** numeric sequence and allocate the next number;
+3. do not maintain a counter file, Project field, database, or task registry for allocation;
+4. for `MOB`, continue after the highest current simple `MOB-NNN`; legacy compound IDs do not advance the simple sequence.
+
+### 3. Verify uniqueness before and after creation
+
+1. immediately before creation, verify the exact `[DOMAIN-NNN]` does not already exist;
+2. immediately after creation, verify uniqueness again;
+3. if a concurrent creation produced a collision, renumber the newly created work item to the next free sequence before implementation begins.
+
+The same domain sequence is shared across repositories, so the search and uniqueness check must span the Organization, not only the owning repository.
+
+### 4. Create and validate the title
+
+Set the Issue title to `[DOMAIN-NNN] Short human-readable title`:
+
+- `DOMAIN` is a registered prefix of 2–4 uppercase ASCII letters;
+- `NNN` is at least three digits, zero-padded;
+- exactly one space separates the identifier from the title;
+- the title does not encode hierarchy, lifecycle, priority, effort, dates, releases, environments, or repository identity.
+
+If the requested work already has a conforming semantic ID, validate and reuse it instead of allocating a new one.
+
 ## Sources of truth
 
 Before creating a work item, follow [`../../docs/governance/source-of-truth.md`](../../docs/governance/source-of-truth.md):
@@ -58,7 +98,7 @@ When a newer explicit maintainer decision conflicts with written guidance, surfa
 
 First confirm that the current instruction actually authorizes creating the Issue. Planning or describing a possible Issue is not enough.
 
-Then determine which repository owns the behavior, contract, runtime, documentation, or infrastructure being changed.
+Then determine which repository owns the behavior, contract, runtime, documentation, or infrastructure being changed, and select the semantic domain by primary outcome per [`../../docs/governance/work-item-identifiers.md`](../../docs/governance/work-item-identifiers.md). The owning repository and the semantic domain are separate decisions.
 
 Use current repository reality rather than naming guesses. Read relevant repository-local `AGENTS.md`, policy/docs, active contracts, and branch rules when they materially affect scope or verification.
 
@@ -95,7 +135,7 @@ Do not create umbrella/meta tracking Issues by default as a substitute for indep
 
 ### 4. Write the Organization Work Item contract
 
-Follow [`../../.github/ISSUE_TEMPLATE/work-item.yml`](../../.github/ISSUE_TEMPLATE/work-item.yml). Use:
+Follow [`../../.github/ISSUE_TEMPLATE/work-item.yml`](../../.github/ISSUE_TEMPLATE/work-item.yml). Set the Issue title to the canonical `[DOMAIN-NNN] Short title` shape from [Work-item identifier and title](#work-item-identifier-and-title). Use:
 
 - `Goal`
 - `Context`
@@ -194,6 +234,9 @@ Before submitting the Issue, confirm:
 
 - explicit creation authority exists;
 - the owning repository is correct;
+- the semantic domain was selected by primary outcome, not by repository name;
+- the title uses the canonical `[DOMAIN-NNN] Short title` shape;
+- the allocated sequence is the Organization-wide next number and pre/post-create uniqueness was checked;
 - no existing Issue already owns the same outcome;
 - there is one coherent acceptance decision;
 - scope is small enough for a short implementation and verification loop;
