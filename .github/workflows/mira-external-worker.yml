@@ -1,0 +1,412 @@
+name: Mira External Worker
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: Open GitHub Issue number that owns the work
+        required: true
+        type: number
+      base_branch:
+        description: Explicit delivery base branch
+        required: true
+        type: string
+      verification_command:
+        description: Trusted repository-owned verification command
+        required: true
+        type: string
+    secrets:
+      opencode_go_api_key:
+        description: OpenCode Go API credential
+        required: true
+    outputs:
+      worker_branch:
+        description: Isolated worker branch created from the explicit base
+        value: ${{ jobs.worker.outputs.worker_branch }}
+      pull_request_url:
+        description: Draft pull request URL when the run succeeds
+        value: ${{ jobs.worker.outputs.pull_request_url }}
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      worker_branch: ${{ steps.identity.outputs.worker_branch }}
+      pull_request_url: ${{ steps.pr.outputs.url }}
+
+    steps:
+      - name: Validate Mira caller and work item
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+
+          test "${GITHUB_REPOSITORY_OWNER}" = "uichat-mira"
+
+          issue_json="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}")"
+          test "$(jq -r '.state' <<< "$issue_json")" = "open"
+
+          if jq -e '.pull_request != null' <<< "$issue_json" >/dev/null; then
+            echo "Issue #${ISSUE_NUMBER} resolves to a pull request, not a work-item Issue." >&2
+            exit 1
+          fi
+
+          mkdir -p "${RUNNER_TEMP}/mira-worker"
+          printf '%s\n' "$issue_json" > "${RUNNER_TEMP}/mira-worker/issue.json"
+
+          comments_pages="${RUNNER_TEMP}/mira-worker/issue-comments-pages.json"
+          comments_json="${RUNNER_TEMP}/mira-worker/issue-comments.json"
+          trusted_comments="${RUNNER_TEMP}/mira-worker/maintainer-comments.json"
+          trusted_logins="${RUNNER_TEMP}/mira-worker/trusted-commenters.txt"
+
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" > "$comments_pages"
+          jq '[.[][]]' "$comments_pages" > "$comments_json"
+          : > "$trusted_logins"
+
+          while IFS= read -r login; do
+            test -n "$login" || continue
+
+            user_type="$(jq -r --arg login "$login" '[.[] | select(.user.login == $login) | .user.type][0] // ""' "$comments_json")"
+            test "$user_type" != "Bot" || continue
+
+            if permission_json="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${login}/permission" 2>/dev/null)"; then
+              permission="$(jq -r '.permission // ""' <<< "$permission_json")"
+            else
+              echo "::warning::Ignoring Issue comments from @${login}: repository permission could not be verified."
+              continue
+            fi
+
+            case "$permission" in
+              admin|maintain|write)
+                printf '%s\n' "$login" >> "$trusted_logins"
+                ;;
+            esac
+          done < <(jq -r '.[].user.login' "$comments_json" | sort -u)
+
+          jq --rawfile trusted "$trusted_logins" '
+            ($trusted | split("\n") | map(select(length > 0))) as $trusted_logins
+            | [
+                .[]
+                | select(.user.type != "Bot")
+                | select(.user.login as $login | ($trusted_logins | index($login)) != null)
+                | {
+                    id,
+                    author: .user.login,
+                    created_at,
+                    body: (.body // "")
+                  }
+              ]
+            | sort_by(.created_at, .id)
+          ' "$comments_json" > "$trusted_comments"
+
+      - name: Checkout explicit delivery base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Establish immutable execution identity
+        id: identity
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+        run: |
+          set -euo pipefail
+
+          git check-ref-format "refs/heads/${BASE_BRANCH}"
+
+          base_sha="$(git rev-parse HEAD)"
+          worker_branch="agent/issue-${ISSUE_NUMBER}-run-${GITHUB_RUN_ID}"
+
+          git switch -c "$worker_branch"
+
+          maintainer_comment_count="$(jq 'length' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
+
+          cat > "${RUNNER_TEMP}/mira-worker/identity.txt" <<EOF
+          repository=${GITHUB_REPOSITORY}
+          issue=${ISSUE_NUMBER}
+          base_branch=${BASE_BRANCH}
+          base_sha=${base_sha}
+          worker_branch=${worker_branch}
+          opencode_version=1.18.34
+          model=opencode-go/deepseek-v4.1-flash
+          skill_commit=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9
+          trusted_maintainer_comments=${maintainer_comment_count}
+          EOF
+
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "worker_branch=$worker_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Load current Organization policy and pinned Skill
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${HOME}/.agents/skills/execute-work-item"
+
+          gh api "repos/uichat-mira/.github/contents/AGENTS.md?ref=main"             --jq '.content'             | tr -d '\n'             | base64 --decode             > "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
+
+          gh api "repos/uichat-mira/.github/contents/skills/execute-work-item/SKILL.md?ref=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9"             --jq '.content'             | tr -d '\n'             | base64 --decode             > "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+
+          test -s "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
+          test -s "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+          test -s AGENTS.md
+
+      - name: Install pinned OpenCode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.34
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Verify OpenCode version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(opencode --version)" = "1.18.34"
+
+      - name: Run bounded external Worker
+        shell: bash
+        env:
+          OPENCODE_GO_API_KEY: ${{ secrets.opencode_go_api_key }}
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
+          OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
+          OPENCODE_DISABLE_MODELS_FETCH: "1"
+          NO_COLOR: "1"
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          export OPENCODE_AUTH_CONTENT
+          # $key below is a jq variable, not a shell variable.
+          # shellcheck disable=SC2016
+          OPENCODE_AUTH_CONTENT="$(jq -cn --arg key "$OPENCODE_GO_API_KEY"             '{"opencode-go":{"type":"api","key":$key}}')"
+          unset OPENCODE_GO_API_KEY
+
+          export OPENCODE_CONFIG_CONTENT
+          OPENCODE_CONFIG_CONTENT='{
+            "share": "disabled",
+            "autoupdate": false,
+            "permission": {
+              "read": "allow",
+              "glob": "allow",
+              "grep": "allow",
+              "list": "allow",
+              "skill": "allow",
+              "edit": "allow",
+              "write": "allow",
+              "bash": "deny",
+              "task": "deny",
+              "webfetch": "deny",
+              "websearch": "deny",
+              "question": "deny",
+              "external_directory": "deny"
+            }
+          }'
+
+          issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
+          issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
+          maintainer_amendments="$(jq -r '
+            if length == 0 then
+              "(none)"
+            else
+              map(
+                "COMMENT #\(.id) by @\(.author) at \(.created_at)\n\(.body)"
+              )
+              | join("\n\n---\n\n")
+            end
+          ' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
+          org_policy="$(cat "${RUNNER_TEMP}/mira-worker/org-AGENTS.md")"
+
+          cat > "${RUNNER_TEMP}/mira-worker/prompt.txt" <<PROMPT
+          You are the implementation Worker for exactly one explicitly authorized Mira engineering work item.
+
+          Control hierarchy for this run:
+          1. The maintainer authorized implementation of the assigned Issue.
+          2. The current Mira Organization policy below applies.
+          3. The repository root AGENTS.md in the checked-out workspace applies.
+          4. The execute-work-item Skill is installed and MUST be loaded with OpenCode's native skill tool before editing.
+          5. The exact GitHub Issue title/body below is the base work-item contract.
+          6. Trusted maintainer follow-up comments below are chronological follow-up context. A comment is eligible only when its author is a human account with current repository write, maintain, or admin permission; bot and ordinary-user comments are excluded. Only an eligible comment that explicitly clarifies, revises, returns, narrows, or otherwise changes the work item acts as a contract amendment. Status/evidence/conversational comments do not change the contract. When explicit amendments conflict, later trusted amendments override earlier trusted amendments and the conflicting part of the base Issue contract. The loaded execute-work-item Skill defines the full amendment semantics; apply it.
+
+          Immutable execution identity:
+          - repository: ${GITHUB_REPOSITORY}
+          - issue: #${ISSUE_NUMBER}
+          - delivery base: ${BASE_BRANCH}
+          - base SHA: ${BASE_SHA}
+
+          Important execution constraints:
+          - Work only on this Issue.
+          - Only supplied eligible trusted maintainer follow-up comments (human authors with current repository write, maintain, or admin permission) can amend the Issue contract, and only when their wording explicitly changes or clarifies the work item. Ordinary acknowledgements, status notes, evidence chatter, or conversational comments do not amend it.
+          - Other Issue comments are deliberately excluded and have no authority in this run.
+          - Explicit trusted amendments can change implementation scope/acceptance within this Issue, but they do not expand this Worker's authority to merge, close/reopen Issues, release, deploy, or promote environments.
+          - Read repository AGENTS.md before editing.
+          - Load execute-work-item before editing.
+          - Use only repository read/search/edit/write tools. Shell/terminal, web, subagents, and GitHub mutation are unavailable.
+          - Do not create commits, branches, pull requests, Issues, releases, or environment promotions.
+          - Do not claim tests ran. Trusted workflow steps perform verification after you stop.
+          - If the Issue cannot be implemented safely without shell access, a maintainer decision, or broader scope, make no speculative workaround and report the blocker.
+          - Make the smallest coherent change that satisfies the Issue contract.
+          - End with a concise handoff listing changed surfaces, reasoning, and any validation gap.
+
+          CURRENT_MIRA_ORGANIZATION_POLICY
+          ${org_policy}
+
+          ASSIGNED_ISSUE_BASE_CONTRACT
+          Title: ${issue_title}
+
+          ${issue_body}
+
+          TRUSTED_MAINTAINER_FOLLOW_UP
+          ${maintainer_amendments}
+          PROMPT
+
+          opencode run             --model opencode-go/deepseek-v4.1-flash             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             | tee "${RUNNER_TEMP}/mira-worker/worker-output.txt"
+
+      - name: Require a bounded implementation change
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet && test -z "$(git ls-files --others --exclude-standard)"; then
+            echo "Worker produced no implementation changes." >&2
+            exit 1
+          fi
+
+          git diff --check
+
+      - name: Run trusted repository verification
+        shell: bash
+        env:
+          MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+          test -n "${MIRA_VERIFICATION_COMMAND}"
+
+          {
+            echo "$ ${MIRA_VERIFICATION_COMMAND}"
+            bash -lc "${MIRA_VERIFICATION_COMMAND}"
+          } 2>&1 | tee "${RUNNER_TEMP}/mira-worker/verification.log"
+
+      - name: Commit and push isolated worker branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "mira-agent-worker[bot]"
+          git config user.email "mira-agent-worker[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "agent: implement issue #${ISSUE_NUMBER}"
+
+          gh auth setup-git
+          git push --set-upstream origin "HEAD:${WORKER_BRANCH}"
+
+      - name: Create Draft PR with durable handoff
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+
+          export ISSUE_TITLE
+          ISSUE_TITLE="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json" | cut -c1-220)"
+
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
+          worker_output = (root / "worker-output.txt").read_text(errors="replace")[:12000]
+          verification_output = (root / "verification.log").read_text(errors="replace")[:12000]
+
+          body = f"""## Mira external Worker handoff
+
+          - Work item: #{os.environ["ISSUE_NUMBER"]} — {os.environ["ISSUE_TITLE"]}
+          - Delivery base: `{os.environ["BASE_BRANCH"]}`
+          - Base SHA: `{os.environ["BASE_SHA"]}`
+          - Worker branch: `{os.environ["WORKER_BRANCH"]}`
+          - Worker harness: OpenCode CLI 1.18.34
+          - Model route: `opencode-go/deepseek-v4.1-flash`
+          - Portable Skill: `execute-work-item@d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9`
+          - Verification: PASS
+          - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
+
+          This PR is intentionally **Draft**. Worker execution does not grant merge, Issue acceptance/closure, environment promotion, release, or deployment authority.
+
+          <details>
+          <summary>Worker handoff</summary>
+
+          <pre>
+          {worker_output}
+          </pre>
+          </details>
+
+          <details>
+          <summary>Verification output</summary>
+
+          <pre>
+          {verification_output}
+          </pre>
+          </details>
+          """
+          (root / "pr-body.md").write_text(body)
+          PY
+
+          pr_url="$(gh pr create             --draft             --base "$BASE_BRANCH"             --head "$WORKER_BRANCH"             --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}"             --body-file "${RUNNER_TEMP}/mira-worker/pr-body.md")"
+
+          test -n "$pr_url"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Draft PR boundary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh pr view "$PR_URL" --json isDraft,baseRefName,headRefName,state)"
+          test "$(jq -r '.isDraft' <<< "$pr_json")" = "true"
+          test "$(jq -r '.baseRefName' <<< "$pr_json")" = "$BASE_BRANCH"
+          test "$(jq -r '.headRefName' <<< "$pr_json")" = "$WORKER_BRANCH"
+          test "$(jq -r '.state' <<< "$pr_json")" = "OPEN"
+
+      - name: Upload Worker evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/mira-worker/identity.txt
+            ${{ runner.temp }}/mira-worker/maintainer-comments.json
+            ${{ runner.temp }}/mira-worker/worker-output.txt
+            ${{ runner.temp }}/mira-worker/verification.log
+          if-no-files-found: warn
+          retention-days: 14
