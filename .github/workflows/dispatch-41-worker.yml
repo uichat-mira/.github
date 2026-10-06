@@ -1,6 +1,6 @@
 name: Dispatch Worker 41
 
-# revision-dispatch: maintainer review return 2026-10-07
+# regression-dispatch: trusted maintainer comments 2026-10-07
 
 on:
   push:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   worker:
-    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@b5cff98a7fdf0c78cbc1323a1d7662849c9bf285
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@165a2ad2c86c1f9f32d2b7785cffac55c28ac5ad
     with:
       issue_number: 41
       base_branch: main
