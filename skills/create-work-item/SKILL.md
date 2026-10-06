@@ -38,7 +38,7 @@ Small does not mean artificially fragmented. Keep changes together when they for
 
 ## Sources of truth
 
-Before creating a work item, follow [`../../docs/governance/source-of-truth.md`](../../docs/governance/source-of-truth.md):
+Before creating a work item, follow [`../../docs/governance/source-of-truth.md`](../../docs/governance/source-of-truth.md) and the canonical identifier/title convention in [`../../docs/governance/work-item-identifiers.md`](../../docs/governance/work-item-identifiers.md):
 
 - repository / workflow / runtime state is authoritative for current technical reality;
 - GitHub Issue owns the work-item contract and outcome;
@@ -64,7 +64,18 @@ Use current repository reality rather than naming guesses. Read relevant reposit
 
 For work spanning repositories, split only when there are distinct independently implementable and verifiable outcomes. Cross-link separate work items and identify the contract owner when useful. If creation authority covered only one work item, propose additional split Issues instead of creating them automatically.
 
-### 2. Check for existing work
+### 2. Select the semantic domain and title
+
+Assign the work item a semantic identifier and title following [`../../docs/governance/work-item-identifiers.md`](../../docs/governance/work-item-identifiers.md).
+
+- Choose the domain from the canonical registry by **primary outcome / contract owner**, not by the repository containing the Issue. A `.github` Issue is `ORG` only when it is Organization governance; external Agent/Worker platform work in `.github` is `AGT`.
+- Do not invent, rename, or extend the registry while opening one Issue. Adding a domain is a governance change.
+- Compose the title as `[DOMAIN-NNN] Short human-readable title`. The ID is the first token; the title stays short and human-readable.
+- Do not encode repository, hierarchy, lifecycle, priority, effort, dates, release, environment, or phase in the ID.
+
+Sequence allocation and uniqueness verification happen at creation time (step 7). Do not allocate the final number or create a counter here.
+
+### 3. Check for existing work
 
 Before creating a new Issue, search the owning repository and, when useful, the Organization for:
 
@@ -77,7 +88,7 @@ If an existing Issue already owns the outcome, use or update it instead of creat
 
 If changing the existing Issue contract would itself be a material mutation beyond the current authority, report that instead of silently rewriting it.
 
-### 3. Decide whether the work item is small enough
+### 4. Decide whether the work item is small enough
 
 Split the work before creation when one proposed Issue contains outcomes that can be accepted independently, especially when they involve:
 
@@ -93,7 +104,7 @@ A useful test is: **Can a maintainer make one clear accept / return decision fro
 
 Do not create umbrella/meta tracking Issues by default as a substitute for independently verifiable work. Use one only when the maintainer explicitly wants a coordination/tracking contract that has a meaningful acceptance boundary of its own.
 
-### 4. Write the Organization Work Item contract
+### 5. Write the Organization Work Item contract
 
 Follow [`../../.github/ISSUE_TEMPLATE/work-item.yml`](../../.github/ISSUE_TEMPLATE/work-item.yml). Use:
 
@@ -155,7 +166,7 @@ Record only material blockers, ordering constraints, rollback concerns, external
 
 A dependency should not become an excuse to make one Issue own several independently verifiable tasks.
 
-### 5. Keep metadata out of the Issue body
+### 6. Keep metadata out of the Issue body
 
 Do not duplicate GitHub-owned management metadata or relationships in prose. Examples include:
 
@@ -174,7 +185,20 @@ The Issue contract must remain meaningful even if the management projection is t
 
 Do not set Priority, Effort, dates, assignees, milestone, Project Status, or other management metadata unless the current instruction separately grants that metadata decision or an applicable automation owns it.
 
-### 6. Creation and later authority are separate
+### 7. Allocate, check, and verify the identifier at creation time
+
+The number is allocated from current Organization reality, not from a stored counter.
+
+1. Search current Organization Issues across repositories for conforming IDs in the chosen domain.
+2. Take the highest simple numeric sequence and allocate the next number (at least three digits, zero-padded).
+3. Immediately before creating the Issue, confirm the exact `[DOMAIN-NNN]` does not already exist.
+4. Create the Issue with the semantic title.
+5. Immediately after creation, confirm the `[DOMAIN-NNN]` is unique.
+6. If a concurrent creation produced a collision, renumber the newly created work item to the next free sequence and re-verify before implementation begins.
+
+If a collision cannot be safely renumbered, report it instead of leaving two work items with the same semantic ID. Do not create a mutable counter file, Project field, database, or task registry to allocate IDs.
+
+### 8. Creation and later authority are separate
 
 Creating a work item **by itself** does not authorize implementation, branch creation, merge, deployment, release, acceptance, closure, reopen, or other side effects.
 
@@ -194,6 +218,9 @@ Before submitting the Issue, confirm:
 
 - explicit creation authority exists;
 - the owning repository is correct;
+- the semantic domain was chosen by primary outcome/contract owner, not by repository name;
+- the title uses the canonical `[DOMAIN-NNN] Short human-readable title` shape;
+- the exact `[DOMAIN-NNN]` was checked immediately before creation and will be re-verified immediately after;
 - no existing Issue already owns the same outcome;
 - there is one coherent acceptance decision;
 - scope is small enough for a short implementation and verification loop;

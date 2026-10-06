@@ -19,6 +19,7 @@ This repository contains organization-wide engineering policy, reusable SOPs, Gi
 ## Governance
 
 - [Source of Truth](docs/governance/source-of-truth.md) — responsibilities of Issues, Projects, organization docs, runtime state, and mira.tomz.io
+- [Work Item Identifiers](docs/governance/work-item-identifiers.md) — canonical `[DOMAIN-NNN]` work-item identifiers, the initial domain registry, and allocation rules
 
 ## Collaboration Skills
 

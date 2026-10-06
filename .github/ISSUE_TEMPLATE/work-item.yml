@@ -6,6 +6,7 @@ body:
     attributes:
       value: |
         Use this form only when creating a work item has been explicitly authorized. Discussion, review findings, audit findings, TODO discovery, or a suggestion that something should be tracked do not by themselves authorize Issue creation.
+        Title the work item `[DOMAIN-NNN] Short human-readable title` following `docs/governance/work-item-identifiers.md`. Choose the domain by primary outcome/contract owner, not by repository name. IDs are Organization-wide per domain (not repository-local) and must not encode repository, hierarchy, lifecycle, priority, effort, dates, release, environment, or phase.
         Keep the Issue focused on the work contract. Project Status, Priority/Effort/dates, assignees, linked PRs, and other GitHub-owned metadata/relationships should not be duplicated here.
         Normal Organization intake adds open work items to Mira Development; lifecycle position is managed by native Project Status, not by prose in this Issue.
         Creating this Issue does not by itself authorize implementation, acceptance, closure, release, or other later actions.
