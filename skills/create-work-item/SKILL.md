@@ -77,7 +77,27 @@ If an existing Issue already owns the outcome, use or update it instead of creat
 
 If changing the existing Issue contract would itself be a material mutation beyond the current authority, report that instead of silently rewriting it.
 
-### 3. Decide whether the work item is small enough
+### 3. Select and allocate the semantic work-item ID
+
+Follow [`../../docs/governance/work-item-ids.md`](../../docs/governance/work-item-ids.md).
+
+1. choose the domain from the canonical registry by **primary outcome/contract owner**, not by repository name;
+2. search Organization Issues across **all states** (open, closed/completed, duplicate, and not-planned) for conforming IDs in that domain;
+3. take the highest simple numeric sequence and allocate the next number (at least three digits);
+4. immediately before creation, verify that the exact ID does not already exist;
+5. immediately after creation, verify uniqueness again;
+6. if a concurrent creation produced a collision, renumber the newly created work item to the next free sequence before implementation begins.
+
+Additional rules:
+
+- Semantic IDs are **permanently occupied once used**; never reuse an ID after its Issue becomes inactive.
+- If a requested conforming ID already belongs to an existing Issue, **use that existing Issue** instead of creating another Issue with the same ID.
+- A maintainer-supplied semantic ID may be used for a new Issue only when it is valid for the selected domain and currently unoccupied Organization-wide.
+- Do not create a counter file, Project field, database, or task registry to allocate IDs.
+- Do not retroactively assign semantic IDs to historical Issues, and do not rename historical Issues, PRs, branches, or commits to match this convention.
+- The search-based allocator does not guarantee absolute prevention of concurrent duplicates; it detects and corrects races through post-create uniqueness verification.
+
+### 4. Decide whether the work item is small enough
 
 Split the work before creation when one proposed Issue contains outcomes that can be accepted independently, especially when they involve:
 
@@ -93,7 +113,7 @@ A useful test is: **Can a maintainer make one clear accept / return decision fro
 
 Do not create umbrella/meta tracking Issues by default as a substitute for independently verifiable work. Use one only when the maintainer explicitly wants a coordination/tracking contract that has a meaningful acceptance boundary of its own.
 
-### 4. Write the Organization Work Item contract
+### 5. Write the Organization Work Item contract
 
 Follow [`../../.github/ISSUE_TEMPLATE/work-item.yml`](../../.github/ISSUE_TEMPLATE/work-item.yml). Use:
 
@@ -106,6 +126,8 @@ Follow [`../../.github/ISSUE_TEMPLATE/work-item.yml`](../../.github/ISSUE_TEMPLA
 - `Dependencies / risks` when useful
 
 Do not invent a competing Issue schema.
+
+The Issue title must start with the semantic ID selected in step 3, in the form `[DOMAIN-NNN] Short human-readable title`. Do not omit it, reuse another Issue's ID, or submit a placeholder ID.
 
 #### Goal
 
@@ -155,7 +177,7 @@ Record only material blockers, ordering constraints, rollback concerns, external
 
 A dependency should not become an excuse to make one Issue own several independently verifiable tasks.
 
-### 5. Keep metadata out of the Issue body
+### 6. Keep metadata out of the Issue body
 
 Do not duplicate GitHub-owned management metadata or relationships in prose. Examples include:
 
@@ -174,7 +196,7 @@ The Issue contract must remain meaningful even if the management projection is t
 
 Do not set Priority, Effort, dates, assignees, milestone, Project Status, or other management metadata unless the current instruction separately grants that metadata decision or an applicable automation owns it.
 
-### 6. Creation and later authority are separate
+### 7. Creation and later authority are separate
 
 Creating a work item **by itself** does not authorize implementation, branch creation, merge, deployment, release, acceptance, closure, reopen, or other side effects.
 
@@ -195,6 +217,8 @@ Before submitting the Issue, confirm:
 - explicit creation authority exists;
 - the owning repository is correct;
 - no existing Issue already owns the same outcome;
+- the semantic ID is valid for the selected domain and unoccupied Organization-wide across all Issue states;
+- the title carries a real `[DOMAIN-NNN]` ID rather than being omitted, reused, or prefilled;
 - there is one coherent acceptance decision;
 - scope is small enough for a short implementation and verification loop;
 - acceptance criteria are observable;
