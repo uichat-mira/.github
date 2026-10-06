@@ -145,6 +145,7 @@ jobs:
           set -euo pipefail
 
           export OPENCODE_AUTH_CONTENT
+          # shellcheck disable=SC2016 -- $key is a jq variable, not a shell variable.
           OPENCODE_AUTH_CONTENT="$(jq -cn --arg key "$OPENCODE_GO_API_KEY"             '{"opencode-go":{"type":"api","key":$key}}')"
           unset OPENCODE_GO_API_KEY
 
