@@ -590,6 +590,7 @@ jobs:
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
           WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
           PR_URL: ${{ steps.pr.outputs.url }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
@@ -703,6 +704,10 @@ jobs:
               "session": session,
               "commit_sha": os.getenv("COMMIT_SHA") if os.getenv("COMMIT_OUTCOME") == "success" else None,
               "draft_pr_url": os.getenv("PR_URL") or None,
+              "verification": {
+                  "command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000],
+                  "outcome": os.getenv("VERIFY_OUTCOME"),
+              },
               "artifact_retention_days": 14,
               "safety": {
                   "raw_environment_persisted": False,
