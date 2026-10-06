@@ -1,0 +1,25 @@
+name: Dispatch Worker 37 Follow-up
+
+on:
+  push:
+    branches:
+      - dispatch/37-worker-followup
+    paths:
+      - .github/workflows/dispatch-37-worker-followup.yml
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@165a2ad2c86c1f9f32d2b7785cffac55c28ac5ad
+    with:
+      issue_number: 37
+      base_branch: feat/37-external-worker
+      verification_command: |
+        git diff --check
+        test -s skills/execute-work-item/SKILL.md
+    secrets:
+      opencode_go_api_key: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
