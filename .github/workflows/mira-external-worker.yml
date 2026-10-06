@@ -42,6 +42,7 @@ jobs:
 
     steps:
       - name: Validate Mira caller and work item
+        id: validate
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -108,6 +109,7 @@ jobs:
           ' "$comments_json" > "$trusted_comments"
 
       - name: Checkout explicit delivery base
+        id: checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.base_branch }}
@@ -132,7 +134,12 @@ jobs:
 
           maintainer_comment_count="$(jq 'length' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
 
+          run_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
           cat > "${RUNNER_TEMP}/mira-worker/identity.txt" <<EOF
+          run_id=${GITHUB_RUN_ID}
+          run_attempt=${GITHUB_RUN_ATTEMPT}
+          run_started_at=${run_started_at}
           repository=${GITHUB_REPOSITORY}
           issue=${ISSUE_NUMBER}
           base_branch=${BASE_BRANCH}
@@ -148,6 +155,7 @@ jobs:
           echo "worker_branch=$worker_branch" >> "$GITHUB_OUTPUT"
 
       - name: Load current Organization policy and pinned Skill
+        id: policy
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -165,6 +173,7 @@ jobs:
           test -s AGENTS.md
 
       - name: Install pinned OpenCode CLI
+        id: install
         shell: bash
         run: |
           set -euo pipefail
@@ -172,12 +181,14 @@ jobs:
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Verify OpenCode version
+        id: version
         shell: bash
         run: |
           set -euo pipefail
           test "$(opencode --version)" = "1.18.34"
 
       - name: Run bounded external Worker
+        id: worker
         shell: bash
         env:
           OPENCODE_GO_API_KEY: ${{ secrets.opencode_go_api_key }}
@@ -276,9 +287,157 @@ jobs:
           ${maintainer_amendments}
           PROMPT
 
-          opencode run             --model opencode-go/deepseek-v4.1-flash             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             | tee "${RUNNER_TEMP}/mira-worker/worker-output.txt"
+          opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-before.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-before.json"
+
+          set +e
+          opencode run             --model opencode-go/deepseek-v4.1-flash             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             2>&1 | tee "${RUNNER_TEMP}/mira-worker/worker-output.raw"
+          worker_rc="${PIPESTATUS[0]}"
+          set -e
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path(__import__("os").environ["RUNNER_TEMP"]) / "mira-worker"
+          src = root / "worker-output.raw"
+          dst = root / "worker-output.txt"
+          limit = 120_000
+          data = src.read_bytes() if src.exists() else b""
+          truncated = len(data) > limit
+          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
+          (root / "worker-output-meta.json").write_text(
+              __import__("json").dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n"
+          )
+          PY
+
+          opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-after.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-after.json"
+
+          export OPENCODE_SESSION_ID
+          OPENCODE_SESSION_ID="$(python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
+
+          def ids(path):
+              try:
+                  value = json.loads(path.read_text())
+              except Exception:
+                  return []
+              if isinstance(value, dict):
+                  value = value.get("sessions", value.get("data", []))
+              if not isinstance(value, list):
+                  return []
+              out = []
+              for item in value:
+                  if not isinstance(item, dict):
+                      continue
+                  sid = item.get("id") or item.get("sessionID") or item.get("session_id")
+                  if isinstance(sid, str):
+                      out.append(sid)
+              return out
+
+          before = set(ids(root / "sessions-before.json"))
+          after = ids(root / "sessions-after.json")
+          fresh = [sid for sid in after if sid not in before]
+          print((fresh or after or [""])[0])
+          PY
+          )"
+
+          if test -n "$OPENCODE_SESSION_ID"; then
+            if opencode export "$OPENCODE_SESSION_ID" --sanitize > "${RUNNER_TEMP}/mira-worker/session-export.json" 2>/dev/null \
+              || opencode session export "$OPENCODE_SESSION_ID" --sanitize > "${RUNNER_TEMP}/mira-worker/session-export.json" 2>/dev/null; then
+              python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
+          src = root / "session-export.json"
+          out = root / "trajectory.jsonl"
+          summary = root / "session-summary.json"
+          limit_events = 500
+
+          try:
+              data = json.loads(src.read_text(errors="replace"))
+          except Exception as exc:
+              summary.write_text(json.dumps({"available": False, "error": type(exc).__name__}) + "\n")
+              out.write_text("")
+              raise SystemExit(0)
+
+          session = data.get("info", {}) if isinstance(data, dict) else {}
+          messages = data.get("messages", []) if isinstance(data, dict) else []
+          if not isinstance(messages, list):
+              messages = []
+
+          events = []
+          for msg in messages:
+              if not isinstance(msg, dict):
+                  continue
+              info = msg.get("info", msg)
+              if not isinstance(info, dict):
+                  info = {}
+              mid = info.get("id")
+              sid = info.get("sessionID") or session.get("id")
+              role = info.get("role")
+              parts = msg.get("parts", info.get("parts", []))
+              if not isinstance(parts, list):
+                  parts = []
+              for part in parts:
+                  if not isinstance(part, dict):
+                      continue
+                  kind = part.get("type")
+                  if kind == "tool":
+                      state = part.get("state", {})
+                      if not isinstance(state, dict):
+                          state = {}
+                      timing = state.get("time", {})
+                      if not isinstance(timing, dict):
+                          timing = {}
+                      events.append({
+                          "kind": "tool",
+                          "session_id": sid,
+                          "message_id": mid,
+                          "role": role,
+                          "tool": part.get("tool") or part.get("toolName"),
+                          "call_id": part.get("callID") or part.get("toolCallId"),
+                          "status": state.get("status") or part.get("state"),
+                          "started_at": timing.get("start"),
+                          "ended_at": timing.get("end"),
+                      })
+                  elif kind in {"step-start", "step-finish", "patch", "retry", "compaction", "subtask"}:
+                      events.append({
+                          "kind": kind,
+                          "session_id": sid,
+                          "message_id": mid,
+                          "role": role,
+                      })
+
+          truncated = len(events) > limit_events
+          events = events[:limit_events]
+          with out.open("w") as fh:
+              for event in events:
+                  fh.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+          summary.write_text(json.dumps({
+              "available": True,
+              "session_id": session.get("id") or os.environ.get("OPENCODE_SESSION_ID"),
+              "event_count": len(events),
+              "event_limit": limit_events,
+              "truncated": truncated,
+              "content_policy": "metadata-only; prompt/text/reasoning/tool inputs/tool outputs omitted",
+          }, separators=(",", ":")) + "\n")
+          PY
+              rm -f "${RUNNER_TEMP}/mira-worker/session-export.json"
+            else
+              printf '{"available":false,"reason":"sanitized_export_unavailable"}\n' > "${RUNNER_TEMP}/mira-worker/session-summary.json"
+              : > "${RUNNER_TEMP}/mira-worker/trajectory.jsonl"
+            fi
+          else
+            printf '{"available":false,"reason":"session_id_unresolved"}\n' > "${RUNNER_TEMP}/mira-worker/session-summary.json"
+            : > "${RUNNER_TEMP}/mira-worker/trajectory.jsonl"
+          fi
+
+          exit "$worker_rc"
 
       - name: Require a bounded implementation change
+        id: bounded
         shell: bash
         run: |
           set -euo pipefail
@@ -291,6 +450,7 @@ jobs:
           git diff --check
 
       - name: Run trusted repository verification
+        id: verify
         shell: bash
         env:
           MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
@@ -298,12 +458,33 @@ jobs:
           set -euo pipefail
           test -n "${MIRA_VERIFICATION_COMMAND}"
 
+          set +e
           {
             echo "$ ${MIRA_VERIFICATION_COMMAND}"
             bash -lc "${MIRA_VERIFICATION_COMMAND}"
-          } 2>&1 | tee "${RUNNER_TEMP}/mira-worker/verification.log"
+          } 2>&1 | tee "${RUNNER_TEMP}/mira-worker/verification.raw"
+          verification_rc="${PIPESTATUS[0]}"
+          set -e
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, os
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
+          src = root / "verification.raw"
+          dst = root / "verification.log"
+          limit = 120_000
+          data = src.read_bytes() if src.exists() else b""
+          truncated = len(data) > limit
+          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
+          (root / "verification-meta.json").write_text(
+              json.dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n"
+          )
+          PY
+
+          exit "$verification_rc"
 
       - name: Commit and push isolated worker branch
+        id: commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -383,6 +564,7 @@ jobs:
           echo "url=$pr_url" >> "$GITHUB_OUTPUT"
 
       - name: Verify Draft PR boundary
+        id: boundary
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -398,15 +580,162 @@ jobs:
           test "$(jq -r '.headRefName' <<< "$pr_json")" = "$WORKER_BRANCH"
           test "$(jq -r '.state' <<< "$pr_json")" = "OPEN"
 
+      - name: Finalize structured Worker evidence
+        id: evidence
+        if: always()
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          VERSION_OUTCOME: ${{ steps.version.outcome }}
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
+          BOUNDED_OUTCOME: ${{ steps.bounded.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          PR_OUTCOME: ${{ steps.pr.outcome }}
+          BOUNDARY_OUTCOME: ${{ steps.boundary.outcome }}
+        run: |
+          set -euo pipefail
+
+          root="${RUNNER_TEMP}/mira-worker"
+          mkdir -p "$root"
+
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            git status --short > "$root/changed-files.txt" || true
+            if test -n "${BASE_SHA:-}" && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+              git diff --name-status "${BASE_SHA}"...HEAD > "$root/committed-files.txt" || true
+              git diff --stat "${BASE_SHA}"...HEAD > "$root/diff-stat.txt" || true
+            else
+              git diff --name-status > "$root/committed-files.txt" || true
+              git diff --stat > "$root/diff-stat.txt" || true
+            fi
+          fi
+
+          export TERMINAL_STATUS FAILURE_STAGE
+          read -r TERMINAL_STATUS FAILURE_STAGE < <(python3 - <<'PY'
+          import os
+          stages = [
+              ("validate", os.getenv("VALIDATE_OUTCOME")),
+              ("checkout", os.getenv("CHECKOUT_OUTCOME")),
+              ("identity", os.getenv("IDENTITY_OUTCOME")),
+              ("policy", os.getenv("POLICY_OUTCOME")),
+              ("install", os.getenv("INSTALL_OUTCOME")),
+              ("version", os.getenv("VERSION_OUTCOME")),
+              ("worker", os.getenv("WORKER_OUTCOME")),
+              ("bounded_change", os.getenv("BOUNDED_OUTCOME")),
+              ("trusted_verification", os.getenv("VERIFY_OUTCOME")),
+              ("commit_push", os.getenv("COMMIT_OUTCOME")),
+              ("draft_pr", os.getenv("PR_OUTCOME")),
+              ("draft_pr_boundary", os.getenv("BOUNDARY_OUTCOME")),
+          ]
+          failed = next((name for name, outcome in stages if outcome == "failure"), "")
+          terminal = "failure" if failed else ("success" if all(outcome in {"success", "skipped"} for _, outcome in stages) else "incomplete")
+          print(terminal, failed or "none")
+          PY
+          )
+
+          export RUN_ENDED_AT
+          RUN_ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export COMMIT_SHA
+          COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
+          identity = {}
+          p = root / "identity.txt"
+          if p.exists():
+              for line in p.read_text(errors="replace").splitlines():
+                  if "=" in line:
+                      k, v = line.split("=", 1)
+                      identity[k.strip()] = v.strip()
+
+          stages = {
+              "validate": os.getenv("VALIDATE_OUTCOME"),
+              "checkout": os.getenv("CHECKOUT_OUTCOME"),
+              "identity": os.getenv("IDENTITY_OUTCOME"),
+              "policy": os.getenv("POLICY_OUTCOME"),
+              "install": os.getenv("INSTALL_OUTCOME"),
+              "version": os.getenv("VERSION_OUTCOME"),
+              "worker": os.getenv("WORKER_OUTCOME"),
+              "bounded_change": os.getenv("BOUNDED_OUTCOME"),
+              "trusted_verification": os.getenv("VERIFY_OUTCOME"),
+              "commit_push": os.getenv("COMMIT_OUTCOME"),
+              "draft_pr": os.getenv("PR_OUTCOME"),
+              "draft_pr_boundary": os.getenv("BOUNDARY_OUTCOME"),
+          }
+
+          session = {}
+          sp = root / "session-summary.json"
+          if sp.exists():
+              try:
+                  session = json.loads(sp.read_text())
+              except Exception:
+                  session = {"available": False, "reason": "invalid_session_summary"}
+
+          payload = {
+              "schema_version": 1,
+              "run_id": identity.get("run_id") or os.getenv("GITHUB_RUN_ID"),
+              "run_attempt": identity.get("run_attempt") or os.getenv("GITHUB_RUN_ATTEMPT"),
+              "repository": os.getenv("GITHUB_REPOSITORY"),
+              "issue_number": int(os.getenv("ISSUE_NUMBER")) if os.getenv("ISSUE_NUMBER") else None,
+              "base_branch": os.getenv("BASE_BRANCH"),
+              "base_sha": os.getenv("BASE_SHA") or identity.get("base_sha"),
+              "worker_branch": os.getenv("WORKER_BRANCH") or identity.get("worker_branch"),
+              "opencode_version": identity.get("opencode_version", "1.18.34"),
+              "model_route": identity.get("model", "opencode-go/deepseek-v4.1-flash"),
+              "skill_commit": identity.get("skill_commit"),
+              "started_at": identity.get("run_started_at"),
+              "ended_at": os.getenv("RUN_ENDED_AT"),
+              "terminal_status": os.getenv("TERMINAL_STATUS"),
+              "failure_stage": os.getenv("FAILURE_STAGE"),
+              "stages": stages,
+              "session": session,
+              "commit_sha": os.getenv("COMMIT_SHA") if os.getenv("COMMIT_OUTCOME") == "success" else None,
+              "draft_pr_url": os.getenv("PR_URL") or None,
+              "verification": {
+                  "command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000],
+                  "outcome": os.getenv("VERIFY_OUTCOME"),
+              },
+              "artifact_retention_days": 14,
+              "safety": {
+                  "raw_environment_persisted": False,
+                  "provider_credentials_persisted": False,
+                  "github_token_persisted": False,
+                  "session_content_policy": "metadata-only trajectory; sanitized export removed after extraction",
+                  "worker_output_limit_bytes": 120000,
+                  "verification_output_limit_bytes": 120000,
+              },
+          }
+          (root / "worker-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          PY
+
       - name: Upload Worker evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mira-external-worker-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/mira-worker/identity.txt
-            ${{ runner.temp }}/mira-worker/maintainer-comments.json
+            ${{ runner.temp }}/mira-worker/worker-run.json
+            ${{ runner.temp }}/mira-worker/trajectory.jsonl
+            ${{ runner.temp }}/mira-worker/session-summary.json
             ${{ runner.temp }}/mira-worker/worker-output.txt
+            ${{ runner.temp }}/mira-worker/worker-output-meta.json
             ${{ runner.temp }}/mira-worker/verification.log
+            ${{ runner.temp }}/mira-worker/verification-meta.json
+            ${{ runner.temp }}/mira-worker/changed-files.txt
+            ${{ runner.temp }}/mira-worker/committed-files.txt
+            ${{ runner.temp }}/mira-worker/diff-stat.txt
           if-no-files-found: warn
           retention-days: 14
