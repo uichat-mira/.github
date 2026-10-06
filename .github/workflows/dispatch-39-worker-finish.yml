@@ -1,0 +1,25 @@
+name: Dispatch Worker 39 Finish
+
+on:
+  push:
+    branches:
+      - dispatch/39-worker-finish
+    paths:
+      - .github/workflows/dispatch-39-worker-finish.yml
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@f7dca3c7323cbfd9816ed3abd33d53a71ec1bc8c
+    with:
+      issue_number: 39
+      base_branch: main
+      verification_command: |
+        git diff --check
+        ruby -e 'require "yaml"; YAML.load_file(".github/workflows/mira-external-worker.yml")'
+    secrets:
+      opencode_go_api_key: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
