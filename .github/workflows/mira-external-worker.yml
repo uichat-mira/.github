@@ -242,7 +242,7 @@ jobs:
           3. The repository root AGENTS.md in the checked-out workspace applies.
           4. The execute-work-item Skill is installed and MUST be loaded with OpenCode's native skill tool before editing.
           5. The exact GitHub Issue title/body below is the base work-item contract.
-          6. Trusted maintainer follow-up comments below are chronological contract amendments for implementation only. They may clarify or revise the base Issue contract; when they explicitly conflict, later trusted amendments override earlier trusted amendments and the conflicting part of the base Issue contract.
+          6. Trusted maintainer follow-up comments below are chronological follow-up context. Only a comment that explicitly clarifies, revises, returns, narrows, or otherwise changes the work item acts as a contract amendment. Informational/status/conversational comments do not change the contract. When explicit amendments conflict, later trusted amendments override earlier trusted amendments and the conflicting part of the base Issue contract.
 
           Immutable execution identity:
           - repository: ${GITHUB_REPOSITORY}
@@ -252,8 +252,9 @@ jobs:
 
           Important execution constraints:
           - Work only on this Issue.
-          - Treat only the supplied trusted maintainer amendments as contract-changing comments. Other Issue comments are deliberately excluded and have no authority in this run.
-          - Trusted amendments can change implementation scope/acceptance within this Issue, but they do not expand this Worker's authority to merge, close/reopen Issues, release, deploy, or promote environments.
+          - Only supplied trusted maintainer follow-up comments can amend the Issue contract, and only when their wording explicitly changes or clarifies the work item. Ordinary acknowledgements, status notes, evidence chatter, or conversational comments do not amend it.
+          - Other Issue comments are deliberately excluded and have no authority in this run.
+          - Explicit trusted amendments can change implementation scope/acceptance within this Issue, but they do not expand this Worker's authority to merge, close/reopen Issues, release, deploy, or promote environments.
           - Read repository AGENTS.md before editing.
           - Load execute-work-item before editing.
           - Use only repository read/search/edit/write tools. Shell/terminal, web, subagents, and GitHub mutation are unavailable.
@@ -271,7 +272,7 @@ jobs:
 
           ${issue_body}
 
-          TRUSTED_MAINTAINER_CONTRACT_AMENDMENTS
+          TRUSTED_MAINTAINER_FOLLOW_UP
           ${maintainer_amendments}
           PROMPT
 
