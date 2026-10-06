@@ -1,0 +1,322 @@
+name: Mira External Worker
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: Open GitHub Issue number that owns the work
+        required: true
+        type: number
+      base_branch:
+        description: Explicit delivery base branch
+        required: true
+        type: string
+      verification_command:
+        description: Trusted repository-owned verification command
+        required: true
+        type: string
+    secrets:
+      opencode_go_api_key:
+        description: OpenCode Go API credential
+        required: true
+    outputs:
+      worker_branch:
+        description: Isolated worker branch created from the explicit base
+        value: ${{ jobs.worker.outputs.worker_branch }}
+      pull_request_url:
+        description: Draft pull request URL when the run succeeds
+        value: ${{ jobs.worker.outputs.pull_request_url }}
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      worker_branch: ${{ steps.identity.outputs.worker_branch }}
+      pull_request_url: ${{ steps.pr.outputs.url }}
+
+    steps:
+      - name: Validate work item
+        id: issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+
+          issue_json="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}")"
+          test "$(jq -r '.state' <<< "$issue_json")" = "open"
+
+          if jq -e '.pull_request != null' <<< "$issue_json" >/dev/null; then
+            echo "Issue #${ISSUE_NUMBER} resolves to a pull request, not a work-item Issue." >&2
+            exit 1
+          fi
+
+          mkdir -p "${RUNNER_TEMP}/mira-worker"
+          printf '%s\n' "$issue_json" > "${RUNNER_TEMP}/mira-worker/issue.json"
+
+          {
+            echo "title<<EOF"
+            jq -r '.title' <<< "$issue_json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout explicit delivery base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Establish immutable execution identity
+        id: identity
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+        run: |
+          set -euo pipefail
+
+          base_sha="$(git rev-parse HEAD)"
+          worker_branch="agent/issue-${ISSUE_NUMBER}-run-${GITHUB_RUN_ID}"
+
+          git switch -c "$worker_branch"
+
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "worker_branch=$worker_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Load current Organization policy and pinned Skill
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${RUNNER_TEMP}/mira-worker"
+          mkdir -p "${HOME}/.agents/skills/execute-work-item"
+
+          gh api "repos/uichat-mira/.github/contents/AGENTS.md?ref=main"             --jq '.content' | tr -d '\n' | base64 --decode             > "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
+
+          gh api "repos/uichat-mira/.github/contents/skills/execute-work-item/SKILL.md?ref=3c474bf4df97e112b008d516a61a194d48b627b9"             --jq '.content' | tr -d '\n' | base64 --decode             > "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+
+          test -s "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
+          test -s "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+          test -s AGENTS.md
+
+      - name: Install pinned OpenCode CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.34
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Verify OpenCode version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(opencode --version)" = "1.18.34"
+
+      - name: Run bounded external Worker
+        id: opencode
+        shell: bash
+        env:
+          OPENCODE_GO_API_KEY: ${{ secrets.opencode_go_api_key }}
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
+          OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
+          OPENCODE_DISABLE_MODELS_FETCH: "1"
+          NO_COLOR: "1"
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          export OPENCODE_AUTH_CONTENT
+          OPENCODE_AUTH_CONTENT="$(jq -cn --arg key "$OPENCODE_GO_API_KEY"             '{"opencode-go":{"type":"api","key":$key}}')"
+          unset OPENCODE_GO_API_KEY
+
+          export OPENCODE_CONFIG_CONTENT
+          OPENCODE_CONFIG_CONTENT='{
+            "$schema": "https://opencode.ai/config.json",
+            "share": "disabled",
+            "autoupdate": false,
+            "permission": {
+              "read": "allow",
+              "glob": "allow",
+              "grep": "allow",
+              "list": "allow",
+              "skill": "allow",
+              "edit": "allow",
+              "write": "allow",
+              "bash": "deny",
+              "task": "deny",
+              "webfetch": "deny",
+              "websearch": "deny",
+              "question": "deny",
+              "external_directory": "deny"
+            }
+          }'
+
+          issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
+          issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
+          org_policy="$(cat "${RUNNER_TEMP}/mira-worker/org-AGENTS.md")"
+
+          cat > "${RUNNER_TEMP}/mira-worker/prompt.txt" <<PROMPT
+          You are the implementation Worker for exactly one explicitly authorized Mira engineering work item.
+
+          Control hierarchy for this run:
+          1. The maintainer authorized implementation of the assigned Issue.
+          2. The current Mira Organization policy below applies.
+          3. The repository root AGENTS.md in the checked-out workspace applies.
+          4. The execute-work-item Skill is installed and MUST be loaded with OpenCode's native skill tool before editing.
+          5. The exact GitHub Issue contract below defines the bounded work item.
+
+          Immutable execution identity:
+          - repository: ${GITHUB_REPOSITORY}
+          - issue: #${ISSUE_NUMBER}
+          - delivery base: ${BASE_BRANCH}
+          - base SHA: ${BASE_SHA}
+
+          Important execution constraints:
+          - Work only on this Issue.
+          - Read repository AGENTS.md before editing.
+          - Load execute-work-item before editing.
+          - Use only repository read/search/edit/write tools. Shell/terminal, web, subagents, and GitHub mutation are unavailable.
+          - Do not create commits, branches, pull requests, Issues, releases, or environment promotions.
+          - Do not claim tests ran. Trusted workflow steps perform verification after you stop.
+          - If the Issue cannot be implemented safely without shell access, a maintainer decision, or broader scope, make no speculative workaround and report the blocker.
+          - Make the smallest coherent change that satisfies the Issue contract.
+          - End with a concise handoff listing changed surfaces, reasoning, and any validation gap.
+
+          CURRENT_MIRA_ORGANIZATION_POLICY
+          ${org_policy}
+
+          ASSIGNED_ISSUE
+          Title: ${issue_title}
+
+          ${issue_body}
+          PROMPT
+
+          opencode run             --model opencode-go/deepseek-v4.1-flash             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             | tee "${RUNNER_TEMP}/mira-worker/worker-output.txt"
+
+      - name: Require a bounded implementation change
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet && test -z "$(git ls-files --others --exclude-standard)"; then
+            echo "Worker produced no implementation changes." >&2
+            exit 1
+          fi
+
+          git diff --check
+
+      - name: Run trusted repository verification
+        id: verify
+        shell: bash
+        env:
+          MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+          test -n "${MIRA_VERIFICATION_COMMAND}"
+
+          {
+            echo "$ ${MIRA_VERIFICATION_COMMAND}"
+            bash -lc "${MIRA_VERIFICATION_COMMAND}"
+          } 2>&1 | tee "${RUNNER_TEMP}/mira-worker/verification.log"
+
+          echo "result=PASS" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push isolated worker branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "mira-agent-worker[bot]"
+          git config user.email "mira-agent-worker[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "agent: implement issue #${ISSUE_NUMBER}"
+
+          gh auth setup-git
+          git push --set-upstream origin "HEAD:${WORKER_BRANCH}"
+
+      - name: Create Draft PR with durable handoff
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+
+          worker_output="$(head -c 12000 "${RUNNER_TEMP}/mira-worker/worker-output.txt" || true)"
+          verification_output="$(head -c 12000 "${RUNNER_TEMP}/mira-worker/verification.log" || true)"
+
+          cat > "${RUNNER_TEMP}/mira-worker/pr-body.md" <<EOF
+          ## Mira external Worker handoff
+
+          - Work item: #${ISSUE_NUMBER} — ${ISSUE_TITLE}
+          - Delivery base: `${BASE_BRANCH}`
+          - Base SHA: `${BASE_SHA}`
+          - Worker branch: `${WORKER_BRANCH}`
+          - Worker harness: OpenCode CLI 1.18.34
+          - Model route: `opencode-go/deepseek-v4.1-flash`
+          - Portable Skill: `execute-work-item@3c474bf4df97e112b008d516a61a194d48b627b9`
+          - Verification: PASS
+          - Verification command: `${VERIFICATION_COMMAND}`
+
+          This PR is intentionally **Draft**. Worker execution does not grant merge, Issue acceptance/closure, environment promotion, release, or deployment authority.
+
+          <details>
+          <summary>Worker handoff</summary>
+
+          ```text
+          ${worker_output}
+          ```
+          </details>
+
+          <details>
+          <summary>Verification output</summary>
+
+          ```text
+          ${verification_output}
+          ```
+          </details>
+          EOF
+
+          pr_url="$(gh pr create             --draft             --base "$BASE_BRANCH"             --head "$WORKER_BRANCH"             --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}"             --body-file "${RUNNER_TEMP}/mira-worker/pr-body.md")"
+
+          test -n "$pr_url"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Draft PR boundary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh pr view "$PR_URL" --json isDraft,baseRefName,headRefName,state)"
+          test "$(jq -r '.isDraft' <<< "$pr_json")" = "true"
+          test "$(jq -r '.baseRefName' <<< "$pr_json")" = "$BASE_BRANCH"
+          test "$(jq -r '.headRefName' <<< "$pr_json")" = "$WORKER_BRANCH"
+          test "$(jq -r '.state' <<< "$pr_json")" = "OPEN"
