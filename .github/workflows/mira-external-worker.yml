@@ -15,10 +15,33 @@ on:
         description: Trusted repository-owned verification command
         required: true
         type: string
+      provider:
+        description: Run-scoped OpenCode provider identifier
+        required: false
+        type: string
+        default: opencode-go
+      model:
+        description: Run-scoped model identifier
+        required: false
+        type: string
+        default: deepseek-v4.1-flash
+      provider_profile:
+        description: Optional provider profile from the frozen Organization registry
+        required: false
+        type: string
+        default: ''
+      provider_registry_ref:
+        description: Immutable 40-character .github commit SHA containing the provider registry
+        required: false
+        type: string
+        default: ''
     secrets:
       opencode_go_api_key:
-        description: OpenCode Go API credential
-        required: true
+        description: Backward-compatible OpenCode Go API credential
+        required: false
+      provider_api_key:
+        description: Run-scoped credential for the selected provider
+        required: false
     outputs:
       worker_branch:
         description: Isolated worker branch created from the explicit base
@@ -146,13 +169,126 @@ jobs:
           base_sha=${base_sha}
           worker_branch=${worker_branch}
           opencode_version=1.18.34
-          model=opencode-go/deepseek-v4.1-flash
           skill_commit=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9
           trusted_maintainer_comments=${maintainer_comment_count}
           EOF
 
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "worker_branch=$worker_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve run-scoped Worker provider route
+        id: provider
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_PROVIDER: ${{ inputs.provider }}
+          REQUESTED_MODEL: ${{ inputs.model }}
+          PROVIDER_PROFILE: ${{ inputs.provider_profile }}
+          PROVIDER_REGISTRY_REF: ${{ inputs.provider_registry_ref }}
+        run: |
+          set -euo pipefail
+
+          root="${RUNNER_TEMP}/mira-worker"
+          provider="${REQUESTED_PROVIDER:-opencode-go}"
+          model="${REQUESTED_MODEL:-deepseek-v4.1-flash}"
+          profile="${PROVIDER_PROFILE:-}"
+          registry_ref="${PROVIDER_REGISTRY_REF:-}"
+
+          if [[ ! "$provider" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Invalid provider identifier '${provider}'." >&2
+            exit 1
+          fi
+          if [[ ! "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ || "$model" == */ || "$model" == *//* ]]; then
+            echo "::error::Invalid model identifier '${model}'." >&2
+            exit 1
+          fi
+
+          provider_config='{}'
+          effective_registry_ref='builtin'
+          provider_registry_sha='none'
+
+          if test -n "$profile"; then
+            if [[ ! "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error::Invalid provider profile '${profile}'." >&2
+              exit 1
+            fi
+            if [[ ! "$registry_ref" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::provider_profile requires an immutable 40-character provider_registry_ref." >&2
+              exit 1
+            fi
+
+            registry_file="${root}/provider-registry.json"
+            registry_path=".github/mira-external-worker-providers.json"
+            provider_registry_sha="$(gh api "repos/uichat-mira/.github/commits/${registry_ref}" --jq '.sha')"
+            test "$provider_registry_sha" = "$registry_ref"
+
+            registry_content="$(gh api "repos/uichat-mira/.github/contents/${registry_path}?ref=${registry_ref}" --jq '.content')"
+            printf '%s' "$registry_content" | tr -d '\n' | base64 --decode > "$registry_file"
+            test -s "$registry_file"
+
+            jq -e '.schema_version == 1 and (.profiles | type == "object")' "$registry_file" >/dev/null
+
+            profile_provider="$(jq -r --arg profile "$profile" '.profiles[$profile].provider_id // ""' "$registry_file")"
+            if test -z "$profile_provider"; then
+              echo "::error::Unknown provider profile '${profile}'." >&2
+              exit 1
+            fi
+            if test "$profile_provider" != "$provider"; then
+              echo "::error::Provider '${provider}' does not match profile '${profile}' provider_id '${profile_provider}'." >&2
+              exit 1
+            fi
+
+            if ! jq -e --arg profile "$profile" --arg model "$model" '
+              (.profiles[$profile].config | type == "object")
+              and (.profiles[$profile].config.npm | type == "string")
+              and (.profiles[$profile].config.npm | length > 0)
+              and (
+                (.profiles[$profile].config.options.baseURL // "") == ""
+                or (.profiles[$profile].config.options.baseURL | test("^https://"))
+              )
+              and (.profiles[$profile].config.models | type == "object")
+              and (.profiles[$profile].config.models | has($model))
+            ' "$registry_file" >/dev/null; then
+              echo "::error::Provider profile '${profile}' does not allow model '${model}' or has invalid config." >&2
+              exit 1
+            fi
+
+            provider_config="$(jq -c --arg provider "$provider" --arg profile "$profile"               '{($provider): (.profiles[$profile].config // {})}' "$registry_file")"
+            effective_registry_ref="$registry_ref"
+          else
+            if test "$provider" != "opencode-go"; then
+              echo "::error::Provider '${provider}' requires a frozen provider_profile." >&2
+              exit 1
+            fi
+          fi
+
+          model_route="${provider}/${model}"
+
+          jq -n             --arg provider "$provider"             --arg model "$model"             --arg model_route "$model_route"             --arg provider_profile "$profile"             --arg provider_registry_ref "$effective_registry_ref"             --arg provider_registry_sha "$provider_registry_sha"             --argjson provider_config "$provider_config"             '{
+              provider: $provider,
+              model: $model,
+              model_route: $model_route,
+              provider_profile: $provider_profile,
+              provider_registry_ref: $provider_registry_ref,
+              provider_registry_sha: $provider_registry_sha,
+              provider_config: $provider_config
+            }' > "${root}/provider-route.json"
+
+          {
+            echo "provider=${provider}"
+            echo "provider_profile=${profile}"
+            echo "provider_registry_ref=${effective_registry_ref}"
+            echo "provider_registry_sha=${provider_registry_sha}"
+            echo "model=${model}"
+            echo "model_route=${model_route}"
+          } >> "${root}/identity.txt"
+
+          echo "provider=${provider}" >> "$GITHUB_OUTPUT"
+          echo "provider_profile=${profile}" >> "$GITHUB_OUTPUT"
+          echo "provider_registry_ref=${effective_registry_ref}" >> "$GITHUB_OUTPUT"
+          echo "provider_registry_sha=${provider_registry_sha}" >> "$GITHUB_OUTPUT"
+          echo "model=${model}" >> "$GITHUB_OUTPUT"
+          echo "model_route=${model_route}" >> "$GITHUB_OUTPUT"
 
       - name: Load current Organization policy and pinned Skill
         id: policy
@@ -191,7 +327,10 @@ jobs:
         id: worker
         shell: bash
         env:
+          PROVIDER: ${{ steps.provider.outputs.provider }}
+          MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
           OPENCODE_GO_API_KEY: ${{ secrets.opencode_go_api_key }}
+          PROVIDER_API_KEY: ${{ secrets.provider_api_key }}
           OPENCODE_DISABLE_AUTOUPDATE: "1"
           OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
           OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
@@ -203,32 +342,52 @@ jobs:
         run: |
           set -euo pipefail
 
+          route="${RUNNER_TEMP}/mira-worker/provider-route.json"
+          test -s "$route"
+
+          if test "$PROVIDER" = "opencode-go" && test -z "${PROVIDER_API_KEY:-}"; then
+            provider_key="${OPENCODE_GO_API_KEY:-}"
+          else
+            provider_key="${PROVIDER_API_KEY:-}"
+          fi
+          if test -z "$provider_key"; then
+            echo "::error::No credential available for provider '${PROVIDER}'." >&2
+            exit 1
+          fi
+
           export OPENCODE_AUTH_CONTENT
-          # $key below is a jq variable, not a shell variable.
+          # $provider and $key below are jq variables, not shell variables.
           # shellcheck disable=SC2016
-          OPENCODE_AUTH_CONTENT="$(jq -cn --arg key "$OPENCODE_GO_API_KEY"             '{"opencode-go":{"type":"api","key":$key}}')"
-          unset OPENCODE_GO_API_KEY
+          OPENCODE_AUTH_CONTENT="$(jq -cn --arg provider "$PROVIDER" --arg key "$provider_key" '{($provider):{"type":"api","key":$key}}')"
+          unset OPENCODE_GO_API_KEY PROVIDER_API_KEY provider_key
 
           export OPENCODE_CONFIG_CONTENT
-          OPENCODE_CONFIG_CONTENT='{
-            "share": "disabled",
-            "autoupdate": false,
-            "permission": {
-              "read": "allow",
-              "glob": "allow",
-              "grep": "allow",
-              "list": "allow",
-              "skill": "allow",
-              "edit": "allow",
-              "write": "allow",
-              "bash": "deny",
-              "task": "deny",
-              "webfetch": "deny",
-              "websearch": "deny",
-              "question": "deny",
-              "external_directory": "deny"
-            }
-          }'
+          OPENCODE_CONFIG_CONTENT="$(
+            jq -cn --slurpfile route "$route" '
+              {
+                "share": "disabled",
+                "autoupdate": false,
+                "permission": {
+                  "read": "allow",
+                  "glob": "allow",
+                  "grep": "allow",
+                  "list": "allow",
+                  "skill": "allow",
+                  "edit": "allow",
+                  "write": "allow",
+                  "bash": "deny",
+                  "task": "deny",
+                  "webfetch": "deny",
+                  "websearch": "deny",
+                  "question": "deny",
+                  "external_directory": "deny"
+                }
+              }
+              + (if (($route[0].provider_config // {}) | length) == 0 then {}
+                 else {"provider": $route[0].provider_config}
+                 end)
+            '
+          )"
 
           issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
           issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
@@ -290,7 +449,7 @@ jobs:
           opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-before.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-before.json"
 
           set +e
-          opencode run             --model opencode-go/deepseek-v4.1-flash             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             2>&1 | tee "${RUNNER_TEMP}/mira-worker/worker-output.raw"
+          opencode run             --model "$MODEL_ROUTE"             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             2>&1 | tee "${RUNNER_TEMP}/mira-worker/worker-output.raw"
           worker_rc="${PIPESTATUS[0]}"
           set -e
 
@@ -510,6 +669,10 @@ jobs:
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
           WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          PROVIDER: ${{ steps.provider.outputs.provider }}
+          PROVIDER_PROFILE: ${{ steps.provider.outputs.provider_profile }}
+          PROVIDER_REGISTRY_REF: ${{ steps.provider.outputs.provider_registry_ref }}
+          MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
         run: |
           set -euo pipefail
@@ -532,7 +695,10 @@ jobs:
           - Base SHA: `{os.environ["BASE_SHA"]}`
           - Worker branch: `{os.environ["WORKER_BRANCH"]}`
           - Worker harness: OpenCode CLI 1.18.34
-          - Model route: `opencode-go/deepseek-v4.1-flash`
+          - Provider: `${os.environ["PROVIDER"]}`
+          - Provider profile: `${os.environ["PROVIDER_PROFILE"] or "builtin"}`
+          - Provider registry revision: `${os.environ["PROVIDER_REGISTRY_REF"]}`
+          - Model route: `${os.environ["MODEL_ROUTE"]}`
           - Portable Skill: `execute-work-item@d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9`
           - Verification: PASS
           - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
@@ -594,6 +760,7 @@ jobs:
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
+          PROVIDER_OUTCOME: ${{ steps.provider.outcome }}
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           VERSION_OUTCOME: ${{ steps.version.outcome }}
@@ -627,6 +794,7 @@ jobs:
               ("validate", os.getenv("VALIDATE_OUTCOME")),
               ("checkout", os.getenv("CHECKOUT_OUTCOME")),
               ("identity", os.getenv("IDENTITY_OUTCOME")),
+              ("provider", os.getenv("PROVIDER_OUTCOME")),
               ("policy", os.getenv("POLICY_OUTCOME")),
               ("install", os.getenv("INSTALL_OUTCOME")),
               ("version", os.getenv("VERSION_OUTCOME")),
@@ -665,6 +833,7 @@ jobs:
               "validate": os.getenv("VALIDATE_OUTCOME"),
               "checkout": os.getenv("CHECKOUT_OUTCOME"),
               "identity": os.getenv("IDENTITY_OUTCOME"),
+              "provider": os.getenv("PROVIDER_OUTCOME"),
               "policy": os.getenv("POLICY_OUTCOME"),
               "install": os.getenv("INSTALL_OUTCOME"),
               "version": os.getenv("VERSION_OUTCOME"),
@@ -694,7 +863,12 @@ jobs:
               "base_sha": os.getenv("BASE_SHA") or identity.get("base_sha"),
               "worker_branch": os.getenv("WORKER_BRANCH") or identity.get("worker_branch"),
               "opencode_version": identity.get("opencode_version", "1.18.34"),
-              "model_route": identity.get("model", "opencode-go/deepseek-v4.1-flash"),
+              "provider": identity.get("provider", "opencode-go"),
+              "provider_profile": identity.get("provider_profile") or None,
+              "provider_registry_ref": identity.get("provider_registry_ref", "builtin"),
+              "provider_registry_sha": identity.get("provider_registry_sha", "none"),
+              "model": identity.get("model", "deepseek-v4.1-flash"),
+              "model_route": identity.get("model_route", "opencode-go/deepseek-v4.1-flash"),
               "skill_commit": identity.get("skill_commit"),
               "started_at": identity.get("run_started_at"),
               "ended_at": os.getenv("RUN_ENDED_AT"),
@@ -712,6 +886,7 @@ jobs:
               "safety": {
                   "raw_environment_persisted": False,
                   "provider_credentials_persisted": False,
+                  "provider_config_run_scoped": True,
                   "github_token_persisted": False,
                   "session_content_policy": "metadata-only trajectory; sanitized export removed after extraction",
                   "worker_output_limit_bytes": 120000,
