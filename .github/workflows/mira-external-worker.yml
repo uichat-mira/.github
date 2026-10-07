@@ -757,6 +757,10 @@ jobs:
           WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
           PR_URL: ${{ steps.pr.outputs.url }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          REQUESTED_PROVIDER: ${{ inputs.provider }}
+          REQUESTED_MODEL: ${{ inputs.model }}
+          REQUESTED_PROVIDER_PROFILE: ${{ inputs.provider_profile }}
+          REQUESTED_PROVIDER_REGISTRY_REF: ${{ inputs.provider_registry_ref }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
@@ -863,12 +867,16 @@ jobs:
               "base_sha": os.getenv("BASE_SHA") or identity.get("base_sha"),
               "worker_branch": os.getenv("WORKER_BRANCH") or identity.get("worker_branch"),
               "opencode_version": identity.get("opencode_version", "1.18.34"),
-              "provider": identity.get("provider", "opencode-go"),
+              "requested_provider": os.getenv("REQUESTED_PROVIDER") or "opencode-go",
+              "requested_provider_profile": os.getenv("REQUESTED_PROVIDER_PROFILE") or None,
+              "requested_provider_registry_ref": os.getenv("REQUESTED_PROVIDER_REGISTRY_REF") or None,
+              "requested_model": os.getenv("REQUESTED_MODEL") or "deepseek-v4.1-flash",
+              "provider": identity.get("provider"),
               "provider_profile": identity.get("provider_profile") or None,
-              "provider_registry_ref": identity.get("provider_registry_ref", "builtin"),
-              "provider_registry_sha": identity.get("provider_registry_sha", "none"),
-              "model": identity.get("model", "deepseek-v4.1-flash"),
-              "model_route": identity.get("model_route", "opencode-go/deepseek-v4.1-flash"),
+              "provider_registry_ref": identity.get("provider_registry_ref"),
+              "provider_registry_sha": identity.get("provider_registry_sha"),
+              "model": identity.get("model"),
+              "model_route": identity.get("model_route"),
               "skill_commit": identity.get("skill_commit"),
               "started_at": identity.get("run_started_at"),
               "ended_at": os.getenv("RUN_ENDED_AT"),
