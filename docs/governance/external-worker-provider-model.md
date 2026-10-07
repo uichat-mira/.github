@@ -61,6 +61,19 @@ Each profile declares a `provider_id` that must match the requested `provider`, 
 
 The registry is a small, trusted Organization configuration surface for endpoint/adapter metadata. It must not carry credentials, and it must not grow into a model gateway, auto-router, fallback chain, or general-purpose orchestration platform.
 
+### Validated custom-provider example
+
+The `volcengine-coding-plan` registry profile is a concrete, validated custom-provider route executed through the same reusable Worker contract:
+
+| Field | Value |
+| --- | --- |
+| `provider_profile` | `volcengine-coding-plan` |
+| `provider` | `volcengine-plan` |
+| `model` | `deepseek-v4.1-flash` |
+| Credential | `provider_api_key` (trusted caller secret) |
+
+The run supplied `provider_profile`, `provider`, `model`, and a matching immutable `provider_registry_ref`, and resolved the profile config from the frozen registry at that revision (`1829a72d16a60d65f5982ff77c41140ec4d9261f` at the time of validation). Endpoint, adapter, and model metadata remain owned by the registry entry; this section records only the reusable route identity, not a second copy of the provider config.
+
 ## Isolation
 
 Selection is run-scoped and process-local:
