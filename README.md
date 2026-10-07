@@ -19,8 +19,6 @@ This repository contains organization-wide engineering policy, reusable SOPs, Gi
 ## Governance
 
 - [Source of Truth](docs/governance/source-of-truth.md) — responsibilities of Issues, Projects, organization docs, runtime state, and mira.tomz.io
-- [External Worker provider/model contract](docs/governance/external-worker-providers.md) — run-scoped OpenCode provider/profile/model dispatch and frozen provider registry
-- [External Worker evidence package](docs/governance/external-worker-evidence.md) — bounded structured evidence emitted by each external Worker run
 
 ## Collaboration Skills
 
