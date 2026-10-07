@@ -1,0 +1,27 @@
+name: Dispatch Worker 40 Candidate Invalid
+
+on:
+  push:
+    branches:
+      - dispatch/40-candidate-invalid
+    paths:
+      - .github/workflows/dispatch-40-candidate-invalid.yml
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@f7f6b9c93105c89b201656970757ba0523fc2dd0
+    with:
+      issue_number: 40
+      base_branch: main
+      verification_command: git diff --check
+      provider: mira-openrouter
+      model: deepseek/deepseek-chat-v3.1
+      provider_profile: does-not-exist
+      provider_registry_ref: f7f6b9c93105c89b201656970757ba0523fc2dd0
+    secrets:
+      opencode_go_api_key: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
