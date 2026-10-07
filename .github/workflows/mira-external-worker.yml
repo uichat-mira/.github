@@ -695,10 +695,10 @@ jobs:
           - Base SHA: `{os.environ["BASE_SHA"]}`
           - Worker branch: `{os.environ["WORKER_BRANCH"]}`
           - Worker harness: OpenCode CLI 1.18.34
-          - Provider: `${os.environ["PROVIDER"]}`
-          - Provider profile: `${os.environ["PROVIDER_PROFILE"] or "builtin"}`
-          - Provider registry revision: `${os.environ["PROVIDER_REGISTRY_REF"]}`
-          - Model route: `${os.environ["MODEL_ROUTE"]}`
+          - Provider: `{os.environ["PROVIDER"]}`
+          - Provider profile: `{os.environ["PROVIDER_PROFILE"] or "builtin"}`
+          - Provider registry revision: `{os.environ["PROVIDER_REGISTRY_REF"]}`
+          - Model route: `{os.environ["MODEL_ROUTE"]}`
           - Portable Skill: `execute-work-item@d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9`
           - Verification: PASS
           - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
