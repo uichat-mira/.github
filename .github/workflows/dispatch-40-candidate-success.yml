@@ -1,0 +1,24 @@
+name: Dispatch Worker 40 Candidate Success
+
+on:
+  push:
+    branches:
+      - dispatch/40-candidate-success
+    paths:
+      - .github/workflows/dispatch-40-candidate-success.yml
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@f7f6b9c93105c89b201656970757ba0523fc2dd0
+    with:
+      issue_number: 40
+      base_branch: main
+      verification_command: |
+        git diff --check
+    secrets:
+      opencode_go_api_key: ${{ secrets.AI_PROVIDER_OPENCODE_GO_KEY }}
