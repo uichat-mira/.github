@@ -8,7 +8,7 @@ The Mira External Worker emits a bounded evidence package for every run that rea
 
 The reusable Worker currently uploads:
 
-- `worker-run.json` — run identity, base/branch identity, pinned OpenCode/model/Skill identity, trusted step outcomes, terminal status, failure stage, commit/PR pointers, trusted verification identity, retention, and safety metadata.
+- `worker-run.json` — run identity, base/branch identity, pinned OpenCode/Skill identity, selected provider/profile/model route and frozen provider-registry revision, trusted step outcomes, terminal status, failure stage, commit/PR pointers, trusted verification identity, retention, and safety metadata.
 - `trajectory.jsonl` — metadata-only OpenCode session activity derived from a sanitized native session export. It records tool/step identity and state but omits prompt text, reasoning, tool arguments, and tool results.
 - `session-summary.json` — whether a structured OpenCode export was available, resolved session ID, event count, event bound, and truncation state.
 - `worker-output.txt` and `worker-output-meta.json` — bounded Worker handoff/output plus byte/truncation metadata.
@@ -16,6 +16,10 @@ The reusable Worker currently uploads:
 - `changed-files.txt`, `committed-files.txt`, and `diff-stat.txt` — bounded repository mutation summaries without persisting a full repository snapshot.
 
 Exact filenames are an implementation detail. The durable contract is that equivalent evidence remains machine-readable, bounded, attributable to one immutable run identity, and useful on both success and failure paths.
+
+## Provider/model identity
+
+`worker-run.json` records both the requested and the effective provider, provider profile, model, and model route for the run. When a provider/profile route is selected it also records the frozen provider-registry revision and resolved registry SHA. Provider/model selection is run-scoped and does not mutate persistent OpenCode configuration; see [`external-worker-provider-model.md`](external-worker-provider-model.md).
 
 ## Trust boundary
 
