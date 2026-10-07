@@ -8,7 +8,7 @@ The Mira External Worker emits a bounded evidence package for every run that rea
 
 The reusable Worker currently uploads:
 
-- `worker-run.json` — run identity, base/branch identity, pinned OpenCode/Skill identity, effective run-scoped provider/profile/model route plus frozen registry revision, trusted step outcomes, terminal status, failure stage, commit/PR pointers, trusted verification identity, retention, and safety metadata.
+- `worker-run.json` — run identity, base/branch identity, pinned OpenCode/model/Skill identity, trusted step outcomes, terminal status, failure stage, commit/PR pointers, trusted verification identity, retention, and safety metadata.
 - `trajectory.jsonl` — metadata-only OpenCode session activity derived from a sanitized native session export. It records tool/step identity and state but omits prompt text, reasoning, tool arguments, and tool results.
 - `session-summary.json` — whether a structured OpenCode export was available, resolved session ID, event count, event bound, and truncation state.
 - `worker-output.txt` and `worker-output-meta.json` — bounded Worker handoff/output plus byte/truncation metadata.
@@ -25,12 +25,6 @@ The evidence package distinguishes two classes of activity:
 2. trusted workflow-owned validation, verification, Git mutation, and Draft PR stages, represented by explicit GitHub Actions step outcomes in `worker-run.json`.
 
 A model session cannot grant itself merge, Issue outcome, release, deployment, promotion, or broader workflow authority.
-
-## Provider/model identity
-
-Provider/model selection is a dispatch-time input rather than a fixed Worker property. See [`external-worker-providers.md`](external-worker-providers.md).
-
-`worker-run.json` records the effective `provider`, requested `provider_profile` (or null for the builtin route), `provider_registry_ref`, resolved `provider_registry_sha`, `model`, and `model_route`. The trusted `provider` stage outcome records whether route resolution succeeded, so invalid configuration remains diagnosable even when model execution never starts.
 
 ## OpenCode integration
 
