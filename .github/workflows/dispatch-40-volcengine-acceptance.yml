@@ -1,0 +1,27 @@
+name: Dispatch Worker 40 Volcengine Acceptance
+
+on:
+  push:
+    branches:
+      - dispatch/40-volcengine-acceptance
+    paths:
+      - .github/workflows/dispatch-40-volcengine-acceptance.yml
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  worker:
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@1829a72d16a60d65f5982ff77c41140ec4d9261f
+    with:
+      issue_number: 40
+      base_branch: main
+      verification_command: git diff --check
+      provider: volcengine-plan
+      model: deepseek-v4.1-flash
+      provider_profile: volcengine-coding-plan
+      provider_registry_ref: 1829a72d16a60d65f5982ff77c41140ec4d9261f
+    secrets:
+      provider_api_key: ${{ secrets.AI_PROVIDER_VOLCENGINE_CODING_PLAN_KEY }}
