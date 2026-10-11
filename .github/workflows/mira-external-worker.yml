@@ -151,7 +151,8 @@ jobs:
           git check-ref-format "refs/heads/${BASE_BRANCH}"
 
           base_sha="$(git rev-parse HEAD)"
-          worker_branch="agent/issue-${ISSUE_NUMBER}-run-${GITHUB_RUN_ID}"
+          worker_branch="feat/worker-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git check-ref-format --branch "$worker_branch"
 
           git switch -c "$worker_branch"
 
