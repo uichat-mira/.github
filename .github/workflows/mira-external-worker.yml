@@ -432,8 +432,8 @@ jobs:
           - Shell permission is not authority to push, create/merge PRs, modify unrelated repository or workflow files, deploy, or change secrets. Do not read, log, transmit, or persist credentials/tokens from environment or configuration. Trusted post-run verification and GitHub delivery steps remain authoritative.
           - Web, subagents, and GitHub mutations are unavailable to the Worker as dedicated tools.
           - Do not create commits, branches, pull requests, Issues, releases, or environment promotions.
-          - Do not claim tests ran. Trusted workflow steps perform verification after you stop.
-          - If the Issue cannot be implemented safely without shell access, a maintainer decision, or broader scope, make no speculative workaround and report the blocker.
+          - You may run tests, builds, and diagnostics in the Worker runner and report their exact results. The separate trusted post-run verification is still required; your own passing tests do not replace it.
+          - If the Issue cannot be implemented safely without a maintainer decision or broader scope, make no speculative workaround and report the blocker.
           - Make the smallest coherent change that satisfies the Issue contract.
           - End with a concise handoff listing changed surfaces, reasoning, and any validation gap.
 
