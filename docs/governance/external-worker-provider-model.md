@@ -12,8 +12,8 @@ The reusable workflow accepts:
 
 | Input | Meaning |
 | --- | --- |
-| `provider` | OpenCode provider identifier for this run. Defaults to the built-in `opencode-go` route. |
-| `model` | Model identifier for this run. Defaults to `deepseek-v4.1-flash` on the built-in route. |
+| `provider` | OpenCode provider identifier for this run. Defaults to `mira-opencode-console` (free DeepSeek Console route). |
+| `model` | Model identifier for this run. Defaults to `deepseek-v4.1-flash-free`. |
 | `provider_profile` | Optional profile name from the frozen Organization provider registry. |
 | `provider_registry_ref` | Immutable 40-character `.github` commit SHA that contains the registry. Required when `provider_profile` is set. |
 
@@ -24,11 +24,11 @@ Credentials are passed only through declared caller-owned secrets:
 | `opencode_go_api_key` | Backward-compatible credential for the built-in `opencode-go` route. |
 | `provider_api_key` | Run-scoped credential for the selected provider. |
 
-## Built-in route and backward compatibility
+## Default free route and backward compatibility
 
-With no `provider_profile`, the run uses the built-in `opencode-go` route and the `opencode_go_api_key` secret. This keeps existing authorized callers working without coordinated migration.
+Without explicit route inputs, the Worker chooses `mira-opencode-console/deepseek-v4.1-flash-free` and resolves the `opencode-console-free` profile from the frozen Organization registry commit `aa844024cb9de98b00f485ffd0daa15b7057ae99`. This is a **limited-time** free Console model, not a permanent entitlement. New deployments must not silently fall back to a paid model if its authentication or availability fails.
 
-Built-in and profile routes are not two routing systems. Both resolve through the same credential, config, and `opencode run --model <provider>/<model>` path; only the credential source and provider config differ. When `provider_api_key` is supplied it takes precedence, otherwise the built-in route falls back to `opencode_go_api_key`.
+Maintainers can still select the existing paid Go route for an individual run by passing `provider=opencode-go`, `model=deepseek-v4.1-flash`, and no profile. An explicit custom `provider_profile` and immutable registry ref continue to override the default profile selection. Both routes retain the same workflow, governed execution, verification, and Draft PR boundaries. For the default Console route the Worker uses `provider_api_key` first, or the legacy `opencode_go_api_key` if that is all a caller passes; a Go credential may not grant Console entitlement, so a live authenticated check remains required. Credential failure terminates the run before commit/PR creation. No automatic paid-model fallback is provided.
 
 ## Frozen provider registry
 
