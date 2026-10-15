@@ -74,6 +74,14 @@ The `volcengine-coding-plan` registry profile is a concrete, validated custom-pr
 
 The run supplied `provider_profile`, `provider`, `model`, and a matching immutable `provider_registry_ref`, and resolved the profile config from the frozen registry at that revision (`1829a72d16a60d65f5982ff77c41140ec4d9261f` at the time of validation). Endpoint, adapter, and model metadata remain owned by the registry entry; this section records only the reusable route identity, not a second copy of the provider config.
 
+## OpenCode Console free DeepSeek Worker route
+
+The `opencode-console-free` frozen registry profile provides `mira-opencode-console/deepseek-v4.1-flash-free` for dispatches that explicitly select it. It targets OpenCode Console's `https://opencode.ai/inference/v1/chat/completions` endpoint using the `@ai-sdk/openai-compatible` adapter. The model's published default context is 200K. **This is not the paid `opencode-go/deepseek-v4.1-flash` route.**
+
+The Console free model is a limited-time offering. Its availability, rate limits, and credentials can change; a failed Console call must be reported as failure, never silently rerouted to a paid model. The caller supplies the key through the existing `provider_api_key` secret channel, using an independent Console credential when available. A Go key should not be assumed to grant Console access without a real authenticated smoke test.
+
+The provider profile and its immutable registry SHA are owned by this repository. Product-repository callers may select the profile for their own Worker runs; unrelated OpenCode sessions and explicitly chosen run-scoped models are unchanged.
+
 ## Isolation
 
 Selection is run-scoped and process-local:
