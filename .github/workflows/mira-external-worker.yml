@@ -19,12 +19,12 @@ on:
         description: Run-scoped OpenCode provider identifier
         required: false
         type: string
-        default: opencode-go
+        default: mira-opencode-console
       model:
         description: Run-scoped model identifier
         required: false
         type: string
-        default: deepseek-v4.1-flash
+        default: deepseek-v4.1-flash-free
       provider_profile:
         description: Optional provider profile from the frozen Organization registry
         required: false
@@ -190,10 +190,16 @@ jobs:
           set -euo pipefail
 
           root="${RUNNER_TEMP}/mira-worker"
-          provider="${REQUESTED_PROVIDER:-opencode-go}"
-          model="${REQUESTED_MODEL:-deepseek-v4.1-flash}"
+          provider="${REQUESTED_PROVIDER:-mira-opencode-console}"
+          model="${REQUESTED_MODEL:-deepseek-v4.1-flash-free}"
           profile="${PROVIDER_PROFILE:-}"
           registry_ref="${PROVIDER_REGISTRY_REF:-}"
+
+          # Freeze the default Console-free profile; explicit dispatches may still choose another route.
+          if test "$provider" = "mira-opencode-console" && test -z "$profile" && test -z "$registry_ref"; then
+            profile="opencode-console-free"
+            registry_ref="aa844024cb9de98b00f485ffd0daa15b7057ae99"
+          fi
 
           if [[ ! "$provider" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "::error::Invalid provider identifier '${provider}'." >&2
@@ -346,7 +352,7 @@ jobs:
           route="${RUNNER_TEMP}/mira-worker/provider-route.json"
           test -s "$route"
 
-          if test "$PROVIDER" = "opencode-go" && test -z "${PROVIDER_API_KEY:-}"; then
+          if { test "$PROVIDER" = "opencode-go" || test "$PROVIDER" = "mira-opencode-console"; } && test -z "${PROVIDER_API_KEY:-}"; then
             provider_key="${OPENCODE_GO_API_KEY:-}"
           else
             provider_key="${PROVIDER_API_KEY:-}"
