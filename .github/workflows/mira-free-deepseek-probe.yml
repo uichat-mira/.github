@@ -1,0 +1,123 @@
+name: Mira Free DeepSeek (Isolated Probe)
+
+# Explicitly separate from the production Mira External Worker.
+# This read-only experiment cannot dispatch Issues, write code, create PRs, or use paid fallback.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  free-deepseek-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify free model is currently listed
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 2 https://opencode.ai/inference/v1/models |
+            jq -e '.data | any(.id == "deepseek-v4.1-flash-free")' >/dev/null
+
+      - name: Install pinned official OpenCode v2 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/install | bash -s -- --version 2.0.24
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Verify official CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(opencode --version)" = "2.0.24"
+
+      - name: Test native OpenCode free-model route
+        shell: bash
+        env:
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          NO_COLOR: "1"
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          mkdir -p "$workdir/config" "$workdir/data"
+          export XDG_CONFIG_HOME="$workdir/config"
+          export XDG_DATA_HOME="$workdir/data"
+          export XDG_CACHE_HOME="$workdir/cache"
+          # No API keys and no custom provider: use the official opencode built-in route.
+          # Do not invent User-Agent, session headers, or an upstream proxy.
+          unset OPENCODE_AUTH_CONTENT
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permission":{"*":"ask","bash":"deny","edit":"deny","write":"deny","webfetch":"deny","websearch":"deny","external_directory":"deny"}}'
+          cd "$workdir"
+          set +e
+          timeout 180s opencode run \
+            --model opencode/deepseek-v4.1-flash-free \
+            --agent build \
+            --format json \
+            "Connectivity check only. Do not access files or call tools. Reply exactly MIRA_FREE_DS_PROBE_OK." \
+            > "$RUNNER_TEMP/free-ds-output.jsonl" 2> "$RUNNER_TEMP/free-ds-stderr.log"
+          code="$?"
+          set -e
+          python3 - "$code" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          import os
+
+          exit_code = int(sys.argv[1])
+          root = Path(os.environ["RUNNER_TEMP"])
+          events = []
+          texts = []
+          errors = []
+          for line in (root / "free-ds-output.jsonl").read_text(errors="replace").splitlines():
+              try:
+                  event = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if not isinstance(event, dict):
+                  continue
+              events.append(event.get("type"))
+              if event.get("type") == "error":
+                  errors.append(str(event.get("error", "provider error"))[:500])
+              if event.get("type") == "text":
+                  part = event.get("part", {})
+                  if isinstance(part, dict) and isinstance(part.get("text"), str):
+                      texts.append(part["text"].strip())
+          ok = exit_code == 0 and not errors and "MIRA_FREE_DS_PROBE_OK" in texts
+          summary = {
+              "model": "opencode/deepseek-v4.1-flash-free",
+              "client": "official-opencode-cli/2.0.24",
+              "provider_route": "built-in; no custom provider or proxy",
+              "authenticated": False,
+              "exit_code": exit_code,
+              "event_types": sorted({str(x) for x in events}),
+              "error_count": len(errors),
+              "expected_text_seen": "MIRA_FREE_DS_PROBE_OK" in texts,
+              "passed": ok,
+          }
+          (root / "free-ds-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          if not ok:
+              for err in errors[:2]:
+                  print("Provider error:", err, file=sys.stderr)
+              print(
+                  "CLI stderr tail:",
+                  (root / "free-ds-stderr.log").read_text(errors="replace")[-1600:],
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
+      - name: Upload bounded experiment evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-deepseek-probe
+          path: |
+            ${{ runner.temp }}/free-ds-summary.json
+            ${{ runner.temp }}/free-ds-output.jsonl
+            ${{ runner.temp }}/free-ds-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7
