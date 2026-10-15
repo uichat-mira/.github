@@ -15,7 +15,7 @@ The reusable workflow accepts:
 | `provider` | OpenCode provider identifier for this run. Defaults to `mira-opencode-console` (free DeepSeek Console route). |
 | `model` | Model identifier for this run. Defaults to `deepseek-v4.1-flash-free`. |
 | `provider_profile` | Optional profile name from the frozen Organization provider registry. |
-| `provider_registry_ref` | Immutable 40-character `.github` commit SHA that contains the registry. Required when `provider_profile` is set. |
+| `provider_registry_ref` | Immutable 40-character `.github` commit SHA for an explicitly selected profile. The default free route supplies its own pinned revision. |
 
 Credentials are passed only through declared caller-owned secrets:
 
