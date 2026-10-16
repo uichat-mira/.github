@@ -31,7 +31,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(opencode --version)" = "2.0.24"
+          reported_version="$(opencode --version)"
+          echo "Installed OpenCode CLI: ${reported_version}"
+          test "$reported_version" = "opencode v2.0.24"
 
       - name: Test native OpenCode free-model route
         shell: bash
