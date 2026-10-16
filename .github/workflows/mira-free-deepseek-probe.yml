@@ -254,8 +254,8 @@ jobs:
           set -euo pipefail
           workdir="$(mktemp -d)"
           trap 'rm -rf "$workdir"' EXIT
-          mkdir -p "$workdir/config" "$workdir/data"
-          export XDG_CONFIG_HOME="$workdir/config"
+          mkdir -p "$workdir/data"
+          # Keep the actual HOME-native Skill source visible to OpenCode.
           export XDG_DATA_HOME="$workdir/data"
           export XDG_CACHE_HOME="$workdir/cache"
           unset OPENCODE_AUTH_CONTENT
