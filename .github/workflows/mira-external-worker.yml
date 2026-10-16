@@ -381,7 +381,8 @@ jobs:
               echo "::error::Free Worker rejects paid credentials or non-native provider." >&2
               exit 1
             fi
-            unset OPENCODE_AUTH_CONTENT OPENCODE_DISABLE_MODELS_FETCH
+            # Preserve official CLI's native free-provider support; disable only credential injection.
+            unset OPENCODE_AUTH_CONTENT OPENCODE_DISABLE_MODELS_FETCH OPENCODE_DISABLE_DEFAULT_PLUGINS
           else
             if test "$PROVIDER" = "opencode-go" && test -z "${PROVIDER_API_KEY:-}"; then
               provider_key="${OPENCODE_GO_API_KEY:-}"
