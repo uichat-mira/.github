@@ -127,7 +127,8 @@ jobs:
           export XDG_DATA_HOME="$workdir/data"
           export XDG_CACHE_HOME="$workdir/cache"
           unset OPENCODE_AUTH_CONTENT
-          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permission":{"read":"allow","glob":"allow","list":"allow","edit":"allow","write":"allow","bash":"deny","webfetch":"deny","websearch":"deny","external_directory":"deny","question":"deny"}}'
+          # CLI V2 requires ordered permissions, not the V1 "permission" object.
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"read","resource":"*","effect":"allow"},{"action":"glob","resource":"*","effect":"allow"},{"action":"grep","resource":"*","effect":"allow"},{"action":"edit","resource":"*","effect":"allow"},{"action":"shell","resource":"*","effect":"deny"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"external_directory","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
           cd "$workdir"
           set +e
           timeout 180s opencode run \
