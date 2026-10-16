@@ -1,0 +1,48 @@
+name: Mira Free External Worker
+
+# Free and paid Workers share the governed execution engine but use distinct, pinned
+# dispatch contracts. This wrapper never passes provider credentials.
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        description: One authorized, open engineering Issue
+        required: true
+        type: number
+      base_branch:
+        description: Explicit delivery base branch
+        required: true
+        type: string
+      verification_command:
+        description: Trusted repository-owned verification command
+        required: true
+        type: string
+      model:
+        description: Native OpenCode free-model identifier (allowlisted in engine)
+        required: false
+        type: string
+        default: deepseek-v4.1-flash-free
+    outputs:
+      worker_branch:
+        description: Isolated implementation branch
+        value: ${{ jobs.free-worker.outputs.worker_branch }}
+      pull_request_url:
+        description: Draft PR URL after verified implementation
+        value: ${{ jobs.free-worker.outputs.pull_request_url }}
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+
+jobs:
+  free-worker:
+    # Frozen engine revision: changing free mode cannot mutate existing pinned Go caller.
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@ce38cea2f871d12510a10b5abb03059bf43564ce
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      base_branch: ${{ inputs.base_branch }}
+      verification_command: ${{ inputs.verification_command }}
+      free_mode: true
+      provider: opencode
+      model: ${{ inputs.model }}
