@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   free-deepseek-probe:
+    if: ${{ false }} # Skill-only experimental rerun; prior outcomes preserved in previous run.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -125,6 +126,7 @@ jobs:
           retention-days: 7
 
   free-deepseek-tools:
+    if: ${{ false }} # Skill-only experimental rerun; prior outcomes preserved in previous run.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -259,7 +261,7 @@ jobs:
           export XDG_DATA_HOME="$workdir/data"
           export XDG_CACHE_HOME="$workdir/cache"
           unset OPENCODE_AUTH_CONTENT
-          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"skill","resource":"execute-work-item","effect":"allow"},{"action":"read","resource":"*","effect":"deny"},{"action":"edit","resource":"*","effect":"deny"},{"action":"shell","resource":"*","effect":"deny"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"skill","resource":"execute-work-item","effect":"allow"},{"action":"read","resource":"*","effect":"allow"},{"action":"glob","resource":"*","effect":"allow"},{"action":"grep","resource":"*","effect":"allow"},{"action":"edit","resource":"*","effect":"deny"},{"action":"shell","resource":"*","effect":"ask"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
           cd "$workdir"
           set +e
           timeout 180s opencode run \
