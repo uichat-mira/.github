@@ -123,3 +123,100 @@ jobs:
             ${{ runner.temp }}/free-ds-stderr.log
           if-no-files-found: ignore
           retention-days: 7
+
+  free-deepseek-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install pinned official OpenCode v2 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.0.24
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Verify official CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          reported_version="$(opencode --version)"
+          echo "Installed OpenCode CLI: ${reported_version}"
+          test "$reported_version" = "opencode v2.0.24"
+
+      - name: Verify native file Tool Calling in disposable scratch workspace
+        shell: bash
+        env:
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          NO_COLOR: "1"
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          mkdir -p "$workdir/config" "$workdir/data"
+          printf 'base=100\nspent=40\n' > "$workdir/input.txt"
+          export XDG_CONFIG_HOME="$workdir/config"
+          export XDG_DATA_HOME="$workdir/data"
+          export XDG_CACHE_HOME="$workdir/cache"
+          unset OPENCODE_AUTH_CONTENT
+          # CLI V2 requires ordered permissions, not the V1 "permission" object.
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"read","resource":"*","effect":"allow"},{"action":"glob","resource":"*","effect":"allow"},{"action":"grep","resource":"*","effect":"allow"},{"action":"edit","resource":"*","effect":"allow"},{"action":"shell","resource":"*","effect":"deny"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"external_directory","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
+          cd "$workdir"
+          set +e
+          timeout 180s opencode run \
+            --model opencode/deepseek-v4.1-flash-free \
+            --agent build \
+            --format json \
+            "Using native file tools (not shell), read input.txt, subtract spent from base, and create result.txt containing exactly: remaining=60. Do not create other files." \
+            > "$RUNNER_TEMP/free-ds-tool-events.jsonl" 2> "$RUNNER_TEMP/free-ds-tool-stderr.log"
+          code="$?"
+          set -e
+          python3 - "$workdir" "$code" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          workdir = Path(sys.argv[1])
+          exit_code = int(sys.argv[2])
+          events_file = Path(os.environ["RUNNER_TEMP"]) / "free-ds-tool-events.jsonl"
+          events = []
+          errors = []
+          for line in events_file.read_text(errors="replace").splitlines():
+              try:
+                  item = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(item, dict):
+                  events.append(item.get("type"))
+                  if item.get("type") == "error":
+                      errors.append(str(item.get("error", ""))[:300])
+          actual = (workdir / "result.txt").read_text().strip() if (workdir / "result.txt").is_file() else None
+          passed = exit_code == 0 and not errors and actual == "remaining=60"
+          summary = {
+              "model": "opencode/deepseek-v4.1-flash-free",
+              "smoke": "native file read and write without shell",
+              "exit_code": exit_code,
+              "actual_result": actual[:100] if actual else None,
+              "event_types": sorted({str(item) for item in events}),
+              "error_count": len(errors),
+              "passed": passed,
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "free-ds-tool-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          if not passed:
+              print("Tool smoke failed:", errors[:2], file=sys.stderr)
+              print((Path(os.environ["RUNNER_TEMP"]) / "free-ds-tool-stderr.log").read_text(errors="replace")[-1200:], file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Upload isolated file-tool evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-deepseek-tool-smoke
+          path: |
+            ${{ runner.temp }}/free-ds-tool-summary.json
+            ${{ runner.temp }}/free-ds-tool-events.jsonl
+            ${{ runner.temp }}/free-ds-tool-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7

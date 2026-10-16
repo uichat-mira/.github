@@ -15,6 +15,11 @@ on:
         description: Trusted repository-owned verification command
         required: true
         type: string
+      free_mode:
+        description: Run keyless official OpenCode CLI v2 on allowlisted free models
+        required: false
+        type: boolean
+        default: false
       provider:
         description: Run-scoped OpenCode provider identifier
         required: false
@@ -169,7 +174,7 @@ jobs:
           base_branch=${BASE_BRANCH}
           base_sha=${base_sha}
           worker_branch=${worker_branch}
-          opencode_version=1.18.34
+          opencode_version=${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
           skill_commit=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9
           trusted_maintainer_comments=${maintainer_comment_count}
           EOF
@@ -186,6 +191,7 @@ jobs:
           REQUESTED_MODEL: ${{ inputs.model }}
           PROVIDER_PROFILE: ${{ inputs.provider_profile }}
           PROVIDER_REGISTRY_REF: ${{ inputs.provider_registry_ref }}
+          FREE_MODE: ${{ inputs.free_mode }}
         run: |
           set -euo pipefail
 
@@ -194,6 +200,20 @@ jobs:
           model="${REQUESTED_MODEL:-deepseek-v4.1-flash}"
           profile="${PROVIDER_PROFILE:-}"
           registry_ref="${PROVIDER_REGISTRY_REF:-}"
+
+          if test "$FREE_MODE" = "true"; then
+            if test "$provider" != "opencode" || test -n "$profile" || test -n "$registry_ref"; then
+              echo "::error::Free Worker requires native opencode without a custom provider profile." >&2
+              exit 1
+            fi
+            # Add models only after a native CLI and tool-call smoke.
+            case "$model" in
+              deepseek-v4.1-flash-free) ;;
+              *) echo "::error::Model is not on validated free allowlist." >&2; exit 1 ;;
+            esac
+            curl -fsSL --retry 2 https://opencode.ai/inference/v1/models |
+              jq -e --arg model "$model" '.data | any(.id == $model)' >/dev/null
+          fi
 
           if [[ ! "$provider" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "::error::Invalid provider identifier '${provider}'." >&2
@@ -257,7 +277,7 @@ jobs:
             provider_config="$(jq -c --arg provider "$provider" --arg profile "$profile"               '{($provider): (.profiles[$profile].config // {})}' "$registry_file")"
             effective_registry_ref="$registry_ref"
           else
-            if test "$provider" != "opencode-go"; then
+            if test "$provider" != "opencode-go" && { test "$FREE_MODE" != "true" || test "$provider" != "opencode"; }; then
               echo "::error::Provider '${provider}' requires a frozen provider_profile." >&2
               exit 1
             fi
@@ -314,7 +334,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.34
+          if test "${{ inputs.free_mode }}" = "true"; then
+            curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.0.24
+          else
+            curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.34
+          fi
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Verify OpenCode version
@@ -322,13 +346,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(opencode --version)" = "1.18.34"
+          actual="$(opencode --version)"
+          if test "${{ inputs.free_mode }}" = "true"; then
+            test "$actual" = "opencode v2.0.24"
+          else
+            test "$actual" = "1.18.34"
+          fi
 
       - name: Run bounded external Worker
         id: worker
         shell: bash
         env:
           PROVIDER: ${{ steps.provider.outputs.provider }}
+          FREE_MODE: ${{ inputs.free_mode }}
           MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
           OPENCODE_GO_API_KEY: ${{ secrets.opencode_go_api_key }}
           PROVIDER_API_KEY: ${{ secrets.provider_api_key }}
@@ -346,49 +376,80 @@ jobs:
           route="${RUNNER_TEMP}/mira-worker/provider-route.json"
           test -s "$route"
 
-          if test "$PROVIDER" = "opencode-go" && test -z "${PROVIDER_API_KEY:-}"; then
-            provider_key="${OPENCODE_GO_API_KEY:-}"
+          if test "$FREE_MODE" = "true"; then
+            if test "$PROVIDER" != "opencode" || test -n "${OPENCODE_GO_API_KEY:-}" || test -n "${PROVIDER_API_KEY:-}"; then
+              echo "::error::Free Worker rejects paid credentials or non-native provider." >&2
+              exit 1
+            fi
+            # Preserve official CLI's native free-provider support; disable only credential injection.
+            unset OPENCODE_AUTH_CONTENT OPENCODE_DISABLE_MODELS_FETCH OPENCODE_DISABLE_DEFAULT_PLUGINS
           else
-            provider_key="${PROVIDER_API_KEY:-}"
-          fi
-          if test -z "$provider_key"; then
-            echo "::error::No credential available for provider '${PROVIDER}'." >&2
-            exit 1
-          fi
+            if test "$PROVIDER" = "opencode-go" && test -z "${PROVIDER_API_KEY:-}"; then
+              provider_key="${OPENCODE_GO_API_KEY:-}"
+            else
+              provider_key="${PROVIDER_API_KEY:-}"
+            fi
+            if test -z "$provider_key"; then
+              echo "::error::No credential available for provider '${PROVIDER}'." >&2
+              exit 1
+            fi
 
-          export OPENCODE_AUTH_CONTENT
-          # $provider and $key below are jq variables, not shell variables.
-          # shellcheck disable=SC2016
-          OPENCODE_AUTH_CONTENT="$(jq -cn --arg provider "$PROVIDER" --arg key "$provider_key" '{($provider):{"type":"api","key":$key}}')"
-          unset OPENCODE_GO_API_KEY PROVIDER_API_KEY provider_key
+            export OPENCODE_AUTH_CONTENT
+            # $provider and $key below are jq variables, not shell variables.
+            # shellcheck disable=SC2016
+            OPENCODE_AUTH_CONTENT="$(jq -cn --arg provider "$PROVIDER" --arg key "$provider_key" '{($provider):{"type":"api","key":$key}}')"
+            unset OPENCODE_GO_API_KEY PROVIDER_API_KEY provider_key
+          fi
 
           export OPENCODE_CONFIG_CONTENT
-          OPENCODE_CONFIG_CONTENT="$(
-            jq -cn --slurpfile route "$route" '
-              {
-                "share": "disabled",
-                "autoupdate": false,
-                "permission": {
-                  "read": "allow",
-                  "glob": "allow",
-                  "grep": "allow",
-                  "list": "allow",
-                  "skill": "allow",
-                  "edit": "allow",
-                  "write": "allow",
-                  "bash": "allow",
-                  "task": "deny",
-                  "webfetch": "allow",
-                  "websearch": "allow",
-                  "question": "deny",
-                  "external_directory": "deny"
+          if test "$FREE_MODE" = "true"; then
+            # OpenCode V2 uses ordered "permissions" rules with "shell"/"subagent".
+            # V1 "permission" / "bash" config is NOT understood by the V2 CLI.
+            OPENCODE_CONFIG_CONTENT="$(jq -cn '{
+              share: "disabled",
+              permissions: [
+                {action:"read",resource:"*",effect:"allow"},
+                {action:"read",resource:"*.env*",effect:"deny"},
+                {action:"glob",resource:"*",effect:"allow"},
+                {action:"grep",resource:"*",effect:"allow"},
+                {action:"edit",resource:"*",effect:"allow"},
+                {action:"skill",resource:"*",effect:"allow"},
+                {action:"shell",resource:"*",effect:"allow"},
+                {action:"subagent",resource:"*",effect:"deny"},
+                {action:"webfetch",resource:"*",effect:"allow"},
+                {action:"websearch",resource:"*",effect:"allow"},
+                {action:"external_directory",resource:"*",effect:"deny"},
+                {action:"execute",resource:"*",effect:"deny"}
+              ]
+            }')"
+          else
+            OPENCODE_CONFIG_CONTENT="$(
+              jq -cn --slurpfile route "$route" '
+                {
+                  "share": "disabled",
+                  "autoupdate": false,
+                  "permission": {
+                    "read": "allow",
+                    "glob": "allow",
+                    "grep": "allow",
+                    "list": "allow",
+                    "skill": "allow",
+                    "edit": "allow",
+                    "write": "allow",
+                    "bash": "allow",
+                    "task": "deny",
+                    "webfetch": "allow",
+                    "websearch": "allow",
+                    "question": "deny",
+                    "external_directory": "deny"
+                  }
                 }
-              }
-              + (if (($route[0].provider_config // {}) | length) == 0 then {}
-                 else {"provider": $route[0].provider_config}
-                 end)
-            '
-          )"
+                + (if (($route[0].provider_config // {}) | length) == 0 then {}
+                   else {"provider": $route[0].provider_config}
+                   end)
+              '
+            )"
+          fi
 
           issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
           issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
@@ -436,6 +497,7 @@ jobs:
           - You may run tests, builds, and diagnostics in the Worker runner and report their exact results. The separate trusted post-run verification is still required; your own passing tests do not replace it.
           - If the Issue cannot be implemented safely without a maintainer decision or broader scope, make no speculative workaround and report the blocker.
           - Make the smallest coherent change that satisfies the Issue contract.
+          - Never route the native free Worker to paid models or custom provider endpoints.
           - End with a concise handoff listing changed surfaces, reasoning, and any validation gap.
 
           CURRENT_MIRA_ORGANIZATION_POLICY
@@ -677,6 +739,7 @@ jobs:
           PROVIDER_PROFILE: ${{ steps.provider.outputs.provider_profile }}
           PROVIDER_REGISTRY_REF: ${{ steps.provider.outputs.provider_registry_ref }}
           MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
+          OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
         run: |
           set -euo pipefail
@@ -698,7 +761,7 @@ jobs:
           - Delivery base: `{os.environ["BASE_BRANCH"]}`
           - Base SHA: `{os.environ["BASE_SHA"]}`
           - Worker branch: `{os.environ["WORKER_BRANCH"]}`
-          - Worker harness: OpenCode CLI 1.18.34
+          - Worker harness: OpenCode CLI ${os.environ["OPENCODE_VERSION"]}
           - Provider: `{os.environ["PROVIDER"]}`
           - Provider profile: `{os.environ["PROVIDER_PROFILE"] or "builtin"}`
           - Provider registry revision: `{os.environ["PROVIDER_REGISTRY_REF"]}`
@@ -762,6 +825,7 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
+          FREE_MODE: ${{ inputs.free_mode }}
           REQUESTED_MODEL: ${{ inputs.model }}
           REQUESTED_PROVIDER_PROFILE: ${{ inputs.provider_profile }}
           REQUESTED_PROVIDER_REGISTRY_REF: ${{ inputs.provider_registry_ref }}
