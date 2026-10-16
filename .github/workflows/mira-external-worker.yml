@@ -401,32 +401,54 @@ jobs:
           fi
 
           export OPENCODE_CONFIG_CONTENT
-          OPENCODE_CONFIG_CONTENT="$(
-            jq -cn --slurpfile route "$route" '
-              {
-                "share": "disabled",
-                "autoupdate": false,
-                "permission": {
-                  "read": "allow",
-                  "glob": "allow",
-                  "grep": "allow",
-                  "list": "allow",
-                  "skill": "allow",
-                  "edit": "allow",
-                  "write": "allow",
-                  "bash": "allow",
-                  "task": "deny",
-                  "webfetch": "allow",
-                  "websearch": "allow",
-                  "question": "deny",
-                  "external_directory": "deny"
+          if test "$FREE_MODE" = "true"; then
+            # OpenCode V2 uses ordered "permissions" rules with "shell"/"subagent".
+            # V1 "permission" / "bash" config is NOT understood by the V2 CLI.
+            OPENCODE_CONFIG_CONTENT="$(jq -cn '{
+              share: "disabled",
+              permissions: [
+                {action:"read",resource:"*",effect:"allow"},
+                {action:"read",resource:"*.env*",effect:"deny"},
+                {action:"glob",resource:"*",effect:"allow"},
+                {action:"grep",resource:"*",effect:"allow"},
+                {action:"edit",resource:"*",effect:"allow"},
+                {action:"skill",resource:"*",effect:"allow"},
+                {action:"shell",resource:"*",effect:"allow"},
+                {action:"subagent",resource:"*",effect:"deny"},
+                {action:"webfetch",resource:"*",effect:"allow"},
+                {action:"websearch",resource:"*",effect:"allow"},
+                {action:"external_directory",resource:"*",effect:"deny"},
+                {action:"execute",resource:"*",effect:"deny"}
+              ]
+            }')"
+          else
+            OPENCODE_CONFIG_CONTENT="$(
+              jq -cn --slurpfile route "$route" '
+                {
+                  "share": "disabled",
+                  "autoupdate": false,
+                  "permission": {
+                    "read": "allow",
+                    "glob": "allow",
+                    "grep": "allow",
+                    "list": "allow",
+                    "skill": "allow",
+                    "edit": "allow",
+                    "write": "allow",
+                    "bash": "allow",
+                    "task": "deny",
+                    "webfetch": "allow",
+                    "websearch": "allow",
+                    "question": "deny",
+                    "external_directory": "deny"
+                  }
                 }
-              }
-              + (if (($route[0].provider_config // {}) | length) == 0 then {}
-                 else {"provider": $route[0].provider_config}
-                 end)
-            '
-          )"
+                + (if (($route[0].provider_config // {}) | length) == 0 then {}
+                   else {"provider": $route[0].provider_config}
+                   end)
+              '
+            )"
+          fi
 
           issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
           issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
