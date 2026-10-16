@@ -220,3 +220,96 @@ jobs:
             ${{ runner.temp }}/free-ds-tool-stderr.log
           if-no-files-found: ignore
           retention-days: 7
+
+  free-native-skill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install pinned OpenCode v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.0.24
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned execute-work-item Skill to V2 native directory
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          skill_root="$HOME/.config/opencode/skills/execute-work-item"
+          mkdir -p "$skill_root"
+          gh api "repos/uichat-mira/.github/contents/skills/execute-work-item/SKILL.md?ref=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9" --jq '.content' |
+            tr -d '\n' | base64 --decode > "$skill_root/SKILL.md"
+          test -s "$skill_root/SKILL.md"
+          grep -q '^name: execute-work-item$' "$skill_root/SKILL.md"
+
+      - name: Verify native skill tool loads the pinned organization Skill
+        shell: bash
+        env:
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          NO_COLOR: "1"
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          mkdir -p "$workdir/data"
+          # Keep the actual HOME-native Skill source visible to OpenCode.
+          export XDG_DATA_HOME="$workdir/data"
+          export XDG_CACHE_HOME="$workdir/cache"
+          unset OPENCODE_AUTH_CONTENT
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"skill","resource":"execute-work-item","effect":"allow"},{"action":"read","resource":"*","effect":"deny"},{"action":"edit","resource":"*","effect":"deny"},{"action":"shell","resource":"*","effect":"deny"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
+          cd "$workdir"
+          set +e
+          timeout 180s opencode run \
+            --model opencode/deepseek-v4.1-flash-free \
+            --agent build \
+            --format json \
+            "Test only: invoke the native skill tool with ID execute-work-item to load that skill. Do not implement any issue or touch files. Then reply MIRA_SKILL_LOAD_OK." \
+            > "$RUNNER_TEMP/free-skill-events.jsonl" 2> "$RUNNER_TEMP/free-skill-stderr.log"
+          code="$?"
+          set -e
+          python3 - "$code" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          tools = []
+          texts = []
+          errors = []
+          for line in (root / "free-skill-events.jsonl").read_text(errors="replace").splitlines():
+              try:
+                  event = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if not isinstance(event, dict):
+                  continue
+              typ = event.get("type")
+              part = event.get("part") or {}
+              if typ == "tool_use" and isinstance(part, dict):
+                  tools.append({"tool": part.get("tool"), "status": (part.get("state") or {}).get("status")})
+              if typ == "text" and isinstance(part, dict):
+                  texts.append(part.get("text") or "")
+              if typ == "error":
+                  errors.append(str(event.get("error"))[:300])
+          loaded = any(t["tool"] == "skill" and t["status"] == "completed" for t in tools)
+          passed = int(sys.argv[1]) == 0 and loaded and not errors and any("MIRA_SKILL_LOAD_OK" in t for t in texts)
+          summary = {"skill": "execute-work-item", "native_tool_loaded": loaded, "tool_calls": tools[:15], "provider_errors": len(errors), "passed": passed}
+          (root / "free-skill-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          if not passed:
+              print("CLI stderr tail:", (root / "free-skill-stderr.log").read_text(errors="replace")[-1200:], file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Upload bounded Skill proof
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-native-skill-smoke
+          path: |
+            ${{ runner.temp }}/free-skill-summary.json
+            ${{ runner.temp }}/free-skill-events.jsonl
+            ${{ runner.temp }}/free-skill-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7
