@@ -21,7 +21,7 @@ on:
         description: Native OpenCode free-model identifier (allowlisted in engine)
         required: false
         type: string
-        default: deepseek-v4.1-flash-free
+        default: mimo-v2.6-flash-free
     outputs:
       worker_branch:
         description: Isolated implementation branch
