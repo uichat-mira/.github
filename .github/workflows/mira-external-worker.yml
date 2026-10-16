@@ -327,6 +327,15 @@ jobs:
 
           test -s "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
           test -s "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+          if test "${{ inputs.free_mode }}" = "true"; then
+            # OpenCode V2 discovers its own native global skills directory; the
+            # legacy ~/.agents source is not reliable across V2 releases.
+            mkdir -p "${HOME}/.config/opencode/skills/execute-work-item"
+            cp "${HOME}/.agents/skills/execute-work-item/SKILL.md" \
+              "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
+            cmp -s "${HOME}/.agents/skills/execute-work-item/SKILL.md" \
+              "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
+          fi
           test -s AGENTS.md
 
       - name: Install pinned OpenCode CLI
