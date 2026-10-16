@@ -38,7 +38,7 @@ permissions:
 jobs:
   free-worker:
     # Frozen engine revision: changing free mode cannot mutate existing pinned Go caller.
-    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@ce38cea2f871d12510a10b5abb03059bf43564ce
+    uses: uichat-mira/.github/.github/workflows/mira-external-worker.yml@024ba1e3cd0e528e624938b4a989dfe5cedc19e1
     with:
       issue_number: ${{ inputs.issue_number }}
       base_branch: ${{ inputs.base_branch }}
