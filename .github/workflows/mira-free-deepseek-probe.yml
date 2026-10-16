@@ -130,6 +130,15 @@ jobs:
           # CLI V2 requires ordered permissions, not the V1 "permission" object.
           export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"read","resource":"*","effect":"allow"},{"action":"glob","resource":"*","effect":"allow"},{"action":"grep","resource":"*","effect":"allow"},{"action":"edit","resource":"*","effect":"allow"},{"action":"shell","resource":"*","effect":"deny"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"external_directory","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
           cd "$workdir"
+          # Diagnostic only: print the effective permission rules, never full config.
+          opencode debug config > "$RUNNER_TEMP/free-ds-effective-config.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          d = json.loads((Path(os.environ["RUNNER_TEMP"]) / "free-ds-effective-config.json").read_text())
+          print("Effective V2 permissions:", json.dumps(d.get("permissions")))
+          print("Unexpected legacy permission field:", d.get("permission") is not None)
+          PY
           set +e
           timeout 180s opencode run \
             --model opencode/deepseek-v4.1-flash-free \
