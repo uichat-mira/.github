@@ -208,7 +208,7 @@ jobs:
             fi
             # Add models only after a native CLI and tool-call smoke.
             case "$model" in
-              deepseek-v4.1-flash-free) ;;
+              deepseek-v4.1-flash-free|mimo-v2.6-flash-free) ;;
               *) echo "::error::Model is not on validated free allowlist." >&2; exit 1 ;;
             esac
             curl -fsSL --retry 2 https://opencode.ai/inference/v1/models |
@@ -328,6 +328,26 @@ jobs:
           test -s "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
           test -s "${HOME}/.agents/skills/execute-work-item/SKILL.md"
           if test "${{ inputs.free_mode }}" = "true"; then
+            # Fail closed if the checkout can override or extend V2 Skill resolution.
+            # This intentionally rejects project OpenCode configuration rather than
+            # guessing precedence across local, explicit, and global Skill sources.
+            for local_config in opencode.json opencode.jsonc .opencode.json .opencode.jsonc; do
+              if test -e "$local_config" || test -L "$local_config"; then
+                echo "::error::Free Worker refuses project OpenCode config: $local_config" >&2
+                exit 1
+              fi
+            done
+            for local_source in .opencode .agents .claude; do
+              if test -e "$local_source" || test -L "$local_source"; then
+                echo "::error::Free Worker refuses project Skill/config source: $local_source" >&2
+                exit 1
+              fi
+            done
+            # Also catch a colliding SKILL.md under non-standard directories.
+            if find . -type f -path '*/execute-work-item/SKILL.md' -print -quit | grep -q .; then
+              echo "::error::Free Worker refuses a project-defined execute-work-item Skill." >&2
+              exit 1
+            fi
             # OpenCode V2 discovers its own native global skills directory; the
             # legacy ~/.agents source is not reliable across V2 releases.
             mkdir -p "${HOME}/.config/opencode/skills/execute-work-item"
