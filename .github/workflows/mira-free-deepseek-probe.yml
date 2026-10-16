@@ -54,7 +54,7 @@ jobs:
           export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permission":{"*":"ask","bash":"deny","edit":"deny","write":"deny","webfetch":"deny","websearch":"deny","external_directory":"deny"}}'
           cd "$workdir"
           set +e
-          timeout 180s opencode --standalone run \
+          timeout 180s opencode run \
             --model opencode/deepseek-v4.1-flash-free \
             --agent build \
             --format json \
@@ -112,6 +112,37 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Upload bounded experiment evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: free-deepseek-probe
+          path: |
+            ${{ runner.temp }}/free-ds-summary.json
+            ${{ runner.temp }}/free-ds-output.jsonl
+            ${{ runner.temp }}/free-ds-stderr.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  free-deepseek-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install pinned official OpenCode v2 CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.0.24
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Verify official CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          reported_version="$(opencode --version)"
+          echo "Installed OpenCode CLI: ${reported_version}"
+          test "$reported_version" = "opencode v2.0.24"
+
       - name: Verify native file Tool Calling in disposable scratch workspace
         shell: bash
         env:
@@ -131,7 +162,7 @@ jobs:
           export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permissions":[{"action":"read","resource":"*","effect":"allow"},{"action":"glob","resource":"*","effect":"allow"},{"action":"grep","resource":"*","effect":"allow"},{"action":"edit","resource":"*","effect":"allow"},{"action":"shell","resource":"*","effect":"deny"},{"action":"webfetch","resource":"*","effect":"deny"},{"action":"websearch","resource":"*","effect":"deny"},{"action":"external_directory","resource":"*","effect":"deny"},{"action":"subagent","resource":"*","effect":"deny"}]}'
           cd "$workdir"
           set +e
-          timeout 180s opencode --standalone run \
+          timeout 180s opencode run \
             --model opencode/deepseek-v4.1-flash-free \
             --agent build \
             --format json \
@@ -178,15 +209,12 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Upload bounded experiment evidence
+      - name: Upload isolated file-tool evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: free-deepseek-probe
+          name: free-deepseek-tool-smoke
           path: |
-            ${{ runner.temp }}/free-ds-summary.json
-            ${{ runner.temp }}/free-ds-output.jsonl
-            ${{ runner.temp }}/free-ds-stderr.log
             ${{ runner.temp }}/free-ds-tool-summary.json
             ${{ runner.temp }}/free-ds-tool-events.jsonl
             ${{ runner.temp }}/free-ds-tool-stderr.log
