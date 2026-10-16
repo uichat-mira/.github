@@ -82,6 +82,16 @@ The Console free model is a limited-time offering. Its availability, rate limits
 
 The provider profile and its immutable registry SHA are owned by this repository. Product-repository callers may select the profile for their own Worker runs; unrelated OpenCode sessions and explicitly chosen run-scoped models are unchanged.
 
+## Separate native free Worker (OpenCode CLI V2)
+
+The separate reusable workflow `.github/workflows/mira-free-external-worker.yml` invokes the shared governed Worker engine in explicit `free_mode=true`, pinned to an immutable engine commit. A product repository must provide its own trusted thin `workflow_dispatch` caller, with an explicit Issue number, delivery base, and repository-owned verification command. Mira Desktop's separate free dispatch is `.github/workflows/mira-free-external-worker.yml` targeting `dev`.
+
+This native route is **not** the custom `mira-opencode-console` provider profile above, which was an unverified direct-API experiment and can receive upstream `FreeTierError` (403). The native free route uses OpenCode's official CLI V2, `opencode/deepseek-v4.1-flash-free`, with no custom provider endpoint and no injected provider credentials. Live model response was proven with the earlier read-only probe; file Tool Calling and full Issue-to-Draft-PR behavior require their own run evidence.
+
+The ordinary paid Go Worker's caller and pinned reusable-engine revision remain unchanged. The free-model chooser is run-scoped but **allowlisted**: only independently verified free models may be selected; unknown or paid model IDs fail before model execution. Future free models require explicit allowlist and evidence updates, not silent routing or an automatic paid fallback.
+
+Authority is unchanged: the Worker implements one authorized open Issue on an isolated `feat/worker-...` branch, deterministic repository-owned verification gates commit/push, and the result is a Draft PR to the caller's explicit delivery base. It does not merge, accept/close Issues, or promote environments. The shared engine ensures the Free Worker follows the same Organization and repository policies, pinned execute-work-item Skill, trusted maintainer comment filtering, and bounded run evidence as the original Worker.
+
 ## Isolation
 
 Selection is run-scoped and process-local:
