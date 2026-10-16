@@ -92,6 +92,35 @@ The ordinary paid Go Worker's caller and pinned reusable-engine revision remain 
 
 Authority is unchanged: the Worker implements one authorized open Issue on an isolated `feat/worker-...` branch, deterministic repository-owned verification gates commit/push, and the result is a Draft PR to the caller's explicit delivery base. It does not merge, accept/close Issues, or promote environments. The shared engine ensures the Free Worker follows the same Organization and repository policies, pinned execute-work-item Skill, trusted maintainer comment filtering, and bounded run evidence as the original Worker.
 
+## Organization execution Skill in OpenCode V1 and V2
+
+The External Worker implements existing authorized Issues using only the
+Organization's pinned `execute-work-item` Skill. The separate
+`create-work-item` and `close-work-item` Skills are **not** installed or
+granted to an implementation Worker; it cannot infer Issue creation,
+acceptance, closing, merge, or release authority from a Skill.
+
+The existing paid Go Worker stays on its immutable engine revision and
+historical `~/.agents/skills/execute-work-item/SKILL.md` installation.
+The official OpenCode V2 free Worker also mirrors this **same frozen Skill
+content** into its native
+`~/.config/opencode/skills/execute-work-item/SKILL.md` directory.
+It does not fetch a floating Skill revision, edit user configuration,
+add unrelated organization Skills, or change the model/tool authority.
+
+This V2-native directory is important: documented compatibility paths such
+as `~/.agents/skills` have had V2 discovery regressions. Both
+installation and content equivalence are checked before launching the model.
+The bounded implementation prompt continues to require loading the Skill
+through the native `skill` tool before any code edits.
+
+An isolated real-model skill-tool smoke lives in
+`.github/workflows/mira-free-deepseek-probe.yml`; it asserts a successful
+`skill` tool-use event in addition to file installation. A successful
+model response alone is not proof of Skill loading. If the free-model route
+is unavailable, that smoke must fail and its validation gap remain open
+until a real skill invocation succeeds.
+
 ## Isolation
 
 Selection is run-scoped and process-local:
