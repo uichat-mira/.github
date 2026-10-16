@@ -86,7 +86,7 @@ The provider profile and its immutable registry SHA are owned by this repository
 
 The separate reusable workflow `.github/workflows/mira-free-external-worker.yml` invokes the shared governed Worker engine in explicit `free_mode=true`, pinned to an immutable engine commit. A product repository must provide its own trusted thin `workflow_dispatch` caller, with an explicit Issue number, delivery base, and repository-owned verification command. Mira Desktop's separate free dispatch is `.github/workflows/mira-free-external-worker.yml` targeting `dev`.
 
-This native route is **not** the custom `mira-opencode-console` provider profile above, which was an unverified direct-API experiment and can receive upstream `FreeTierError` (403). The native free route uses OpenCode's official CLI V2, `opencode/deepseek-v4.1-flash-free`, with no custom provider endpoint and no injected provider credentials. Live model response was proven with the earlier read-only probe; file Tool Calling and full Issue-to-Draft-PR behavior require their own run evidence.
+This native route is **not** the custom `mira-opencode-console` provider profile above, which was an unverified direct-API experiment and can receive upstream `FreeTierError` (403). The native free route uses OpenCode's official CLI V2, with no custom provider endpoint and no injected provider credentials. The allowlisted run-scoped models are `opencode/mimo-v2.6-flash-free` (default) and `opencode/deepseek-v4.1-flash-free` (manual choice). MiMo's real-model chat and file Tool Calling passed on [Actions run 38844470177](https://github.com/uichat-mira/.github/actions/runs/38844470177); the pinned Organization Skill loaded through native `skill` successfully on [Actions run 38844682826](https://github.com/uichat-mira/.github/actions/runs/38844682826) after allowing ordinary read tools and requiring approval for shell. DeepSeek had a prior valid file Tool smoke but also intermittent `provider.no-route` responses. Full Issue-to-Draft-PR behavior remains unverified until a dedicated authorized work item runs.
 
 The ordinary paid Go Worker's caller and pinned reusable-engine revision remain unchanged. The free-model chooser is run-scoped but **allowlisted**: only independently verified free models may be selected; unknown or paid model IDs fail before model execution. Future free models require explicit allowlist and evidence updates, not silent routing or an automatic paid fallback.
 
@@ -111,15 +111,20 @@ add unrelated organization Skills, or change the model/tool authority.
 This V2-native directory is important: documented compatibility paths such
 as `~/.agents/skills` have had V2 discovery regressions. Both
 installation and content equivalence are checked before launching the model.
+The Free Worker also fails closed when the checked-out project supplies any
+local OpenCode configuration/Skill directory (`.opencode`, `.agents`, `.claude`
+or root OpenCode config files), or a colliding `execute-work-item/SKILL.md`:
+project-local or configured Skill sources must not silently shadow the pinned
+Organization contract. Only the `execute-work-item` native Skill ID is allowed.
 The bounded implementation prompt continues to require loading the Skill
 through the native `skill` tool before any code edits.
 
 An isolated real-model skill-tool smoke lives in
 `.github/workflows/mira-free-deepseek-probe.yml`; it asserts a successful
 `skill` tool-use event in addition to file installation. A successful
-model response alone is not proof of Skill loading. If the free-model route
-is unavailable, that smoke must fail and its validation gap remain open
-until a real skill invocation succeeds.
+model response alone is not proof of Skill loading. When a free-model route is unavailable the smoke must fail; passing Skill
+installation alone is not sufficient. MiMo's native `skill` invocation
+completed successfully in run 38844682826, with zero provider errors.
 
 ## Isolation
 
