@@ -24,7 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL https://opencode.ai/install | bash -s -- --version 2.0.24
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.0.24
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Verify official CLI version
