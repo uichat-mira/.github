@@ -1,4 +1,4 @@
-name: Mira Free DeepSeek (Isolated Probe)
+name: Mira Free MiMo V2.6 (Isolated Probe)
 
 # Explicitly separate from the production Mira External Worker.
 # This read-only experiment cannot dispatch Issues, write code, create PRs, or use paid fallback.
@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL --retry 2 https://opencode.ai/inference/v1/models |
-            jq -e '.data | any(.id == "deepseek-v4.1-flash-free")' >/dev/null
+            jq -e '.data | any(.id == "mimo-v2.6-flash-free")' >/dev/null
 
       - name: Install pinned official OpenCode v2 CLI
         shell: bash
@@ -55,7 +55,7 @@ jobs:
           cd "$workdir"
           set +e
           timeout 180s opencode run \
-            --model opencode/deepseek-v4.1-flash-free \
+            --model opencode/mimo-v2.6-flash-free \
             --agent build \
             --format json \
             "Connectivity check only. Do not access files or call tools. Reply exactly MIRA_FREE_DS_PROBE_OK." \
@@ -89,7 +89,7 @@ jobs:
                       texts.append(part["text"].strip())
           ok = exit_code == 0 and not errors and "MIRA_FREE_DS_PROBE_OK" in texts
           summary = {
-              "model": "opencode/deepseek-v4.1-flash-free",
+              "model": "opencode/mimo-v2.6-flash-free",
               "client": "official-opencode-cli/2.0.24",
               "provider_route": "built-in; no custom provider or proxy",
               "authenticated": False,
@@ -163,7 +163,7 @@ jobs:
           cd "$workdir"
           set +e
           timeout 180s opencode run \
-            --model opencode/deepseek-v4.1-flash-free \
+            --model opencode/mimo-v2.6-flash-free \
             --agent build \
             --format json \
             "Using native file tools (not shell), read input.txt, subtract spent from base, and create result.txt containing exactly: remaining=60. Do not create other files." \
@@ -193,7 +193,7 @@ jobs:
           actual = (workdir / "result.txt").read_text().strip() if (workdir / "result.txt").is_file() else None
           passed = exit_code == 0 and not errors and actual == "remaining=60"
           summary = {
-              "model": "opencode/deepseek-v4.1-flash-free",
+              "model": "opencode/mimo-v2.6-flash-free",
               "smoke": "native file read and write without shell",
               "exit_code": exit_code,
               "actual_result": actual[:100] if actual else None,
@@ -263,7 +263,7 @@ jobs:
           cd "$workdir"
           set +e
           timeout 180s opencode run \
-            --model opencode/deepseek-v4.1-flash-free \
+            --model opencode/mimo-v2.6-flash-free \
             --agent build \
             --format json \
             "Test only: invoke the native skill tool with ID execute-work-item to load that skill. Do not implement any issue or touch files. Then reply MIRA_SKILL_LOAD_OK." \
