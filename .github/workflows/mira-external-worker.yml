@@ -15,6 +15,11 @@ on:
         description: Trusted repository-owned verification command
         required: true
         type: string
+      timeout_minutes:
+        description: Maximum execution time (minutes) for the Worker job
+        required: false
+        type: number
+        default: 30
       free_mode:
         description: Run keyless official OpenCode CLI v2 on allowlisted free models
         required: false
@@ -63,7 +68,7 @@ permissions:
 jobs:
   worker:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       worker_branch: ${{ steps.identity.outputs.worker_branch }}
       pull_request_url: ${{ steps.pr.outputs.url }}
