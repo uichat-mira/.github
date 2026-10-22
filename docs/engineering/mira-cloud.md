@@ -8,7 +8,7 @@ It defines a shared service model, naming convention, client boundary, and authe
 
 Mira Cloud includes backend services that are reachable by Mira clients or other Mira services, including services such as Relay, Shiyan, Search, Provider gateways, and shared identity/authentication infrastructure.
 
-Cloudflare Workers is the preferred runtime for current Mira Cloud services where it fits, but `Mira Cloud` is a product and architecture boundary, not a synonym for Cloudflare Workers. A service may later use D1, R2, Queues, Workflows, Durable Objects, or non-Cloudflare infrastructure without leaving Mira Cloud.
+Cloudflare Workers remains a preferred runtime for current Mira Cloud services **where it fits**, but `Mira Cloud` is a product and architecture boundary, not a synonym for Cloudflare Workers. Runtime choice is service-owned. In particular, Mira Cloud Authentication V0 is intentionally specified to start on the Mira self-managed server (Docker + Node.js/TypeScript + Fastify + SQLite WAL) because it is a small stateful identity root; see [`mira-cloud-auth.md`](./mira-cloud-auth.md). Other services may continue to use D1, R2, Queues, Workflows, Durable Objects, or non-Cloudflare infrastructure without leaving Mira Cloud.
 
 ## 2. Naming
 
