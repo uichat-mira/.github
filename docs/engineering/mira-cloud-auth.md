@@ -41,7 +41,7 @@ Mira Cloud V0 is closed-access.
 
 The allowlist is an admission control, not a second identity system. The account remains the identity; allow/disable state determines whether the account may obtain usable Mira Cloud sessions and service grants.
 
-Password storage must use a runtime-appropriate slow password KDF and never plaintext or reversible encryption. The concrete KDF is an implementation decision that must be validated in the selected runtime.
+Password storage must use Argon2id or a later explicitly reviewed replacement, never plaintext or reversible encryption. V0 should start from current OWASP-grade Argon2id parameters and benchmark them on the actual 2 vCPU / 2 GiB self-managed server so password verification remains intentionally expensive without creating an avoidable denial-of-service surface. Exact cost parameters remain implementation/security tuning rather than product constants.
 
 ## 3. Identity model
 
@@ -305,11 +305,46 @@ No Provider API keys, Desktop secrets, user files, Remote Host business data, pr
 
 Create a dedicated Mira Cloud Auth service boundary, conventionally `cloud-auth`, rather than embedding shared identity into Shiyan, Relay, or the current `mira-cloud-infra` New API deployment.
 
-Recommended first runtime: Cloudflare Worker + D1, because current Shiyan and hosted Relay already operate in the Cloudflare ecosystem and the initial account population is small.
+### V0 deployment decision
 
-This is not a permanent topology contract. Clients depend on the stable Mira Cloud API contract, not Worker names or deployment location. A later China-region deployment or migration to another runtime must not require redefining Mira Cloud Account semantics.
+The default V0 deployment is the Mira self-managed cloud server rather than Cloudflare Worker + D1.
 
-The Guangzhou node, ICP status, and `tomzlab.cn` are deployment concerns, not identity prerequisites.
+Recommended V0 stack:
+
+- Node.js LTS + TypeScript;
+- Fastify as the HTTP service framework;
+- SQLite in WAL mode as the initial persistent store;
+- a thin repository/storage boundary so the service contract is not coupled to SQLite-specific behavior throughout the codebase;
+- one Docker image/container for the application;
+- a persistent host volume for the SQLite database;
+- the existing server Caddy layer for TLS and reverse proxy;
+- structured JSON logs with rotation;
+- a consistent SQLite backup path to external/object storage;
+- no Redis or PostgreSQL solely for V0 Cloud Auth.
+
+The reasoning is operational rather than ideological: Mira now has a long-lived self-managed server, Cloud Auth is a small stateful identity root, the expected V0 write rate is low, and keeping account/device/session state on one controlled node gives a simpler failure and backup model than introducing a second distributed control plane only for authentication.
+
+### Resource budget
+
+The initial server is 2 vCPU / 2 GiB RAM / 40 GiB disk. Cloud Auth should remain deliberately small:
+
+- ordinary application memory target: roughly 100–200 MiB;
+- container hard memory ceiling: approximately 512 MiB unless evidence justifies a change;
+- CPU is expected to be low outside password hashing; password-hash concurrency and login rate limits must prevent Argon2id from exhausting the host;
+- persistent Cloud Auth data, WAL, local backup staging and bounded logs should fit comfortably within a few GiB;
+- Docker/application log rotation is required so logs cannot grow without bound.
+
+These are operational budgets, not protocol guarantees. Implementation may tune them from measured evidence without changing Mira Cloud Account semantics.
+
+### Migration boundary
+
+SQLite is selected because V0 is a single-instance service with small transactional state. A move to PostgreSQL should be triggered by an architectural need such as multiple active service instances, HA/failover, or another proven persistence requirement—not by an arbitrary account-count threshold.
+
+The service must keep HTTP, identity, and credential contracts independent from the persistence engine. Clients and service consumers must not know whether Cloud Auth uses SQLite, PostgreSQL, Worker/D1, or another backend.
+
+This remains a deployment choice, not a permanent topology contract. A later migration to PostgreSQL, another host, a multi-node topology, or even another compatible runtime must not require redefining Mira Cloud Account semantics.
+
+The server location, ICP/domain status, and concrete public hostname remain deployment concerns rather than identity prerequisites.
 
 ## 13. Migration / implementation order
 
@@ -347,7 +382,7 @@ Do not create a second Remote Capability Registry, a second Host business author
 - OAuth/social login;
 - Passkeys;
 - user-facing token management;
-- Redis/PostgreSQL solely for Auth;
+- Redis/PostgreSQL solely for V0 Auth;
 - Cloud ownership of Remote Host business authorization.
 
 ### Deferred
@@ -358,7 +393,8 @@ Do not create a second Remote Capability Registry, a second Host business author
 - public/community registration;
 - organization/team accounts;
 - multi-region identity topology;
-- precise token/session TTL tuning beyond safe V0 defaults.
+- precise token/session TTL tuning beyond safe V0 defaults;
+- multi-instance/HA database topology before evidence requires it.
 
 ## 15. Effect on Phase III
 
