@@ -403,7 +403,8 @@ Do not create a second Remote Capability Registry, a second Host business author
 - service-specific access credentials;
 - Shiyan shared-identity integration;
 - hosted Relay connection eligibility derived from Cloud identity;
-- Local/Tailscale route preserved independently.
+- Local/Tailscale route preserved independently;
+- under the 2026-10-25 Phase III amendment: OAuth 2.0 Cloud Host authorization, same-account automatic Desktop/Mobile association, login-time scope grant, and Cloud Portal grant changes/revocation without on-site pairing (the grant bridge is the separately owned G outcome in #315).
 
 ### Not required
 
@@ -411,7 +412,7 @@ Do not create a second Remote Capability Registry, a second Host business author
 - invite codes;
 - application/review workflow;
 - email verification;
-- third-party/social login; **standard OAuth 2.0 authorization for the Phase III Cloud Host entry is now required; this exclusion applied only to the initial 2026-10-22 V0 account/password bootstrap**.
+- third-party/social-provider login (distinct from the standard OAuth 2.0 authorization required for the Phase III Cloud Host entry);
 - Passkeys;
 - user-facing token management;
 - Redis/PostgreSQL solely for V0 Auth;
