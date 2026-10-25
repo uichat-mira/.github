@@ -2,12 +2,43 @@
 
 Status: Design  
 Owner: Mira Cloud  
-Last reviewed: 2026-10-22  
+Last reviewed: 2026-10-25 (Phase III product revision)  
 Research owner: [mira-desktop#418](https://github.com/uichat-mira/mira-desktop/issues/418)  
 Roadmap context: [mira-desktop#315](https://github.com/uichat-mira/mira-desktop/issues/315)  
 Organization baseline: [Mira Cloud Core Specification](./mira-cloud.md)
 
 > This document records the design conclusion of AGT-025. It is a design contract, not a claim that Cloud Authentication is already implemented or deployed.
+
+## 0. Phase III maintainer decision · 2026-10-25 (supersedes conflicting AGT-025 V0 assumptions)
+
+**Product scope is frozen in [Phase III roadmap #315](https://github.com/uichat-mira/mira-desktop/issues/315).** This section updates the 2026-10-22 research conclusions; it is a design and implementation target, not a claim that OAuth/Host grants already run in production. Existing Cloud Auth account/password, Cloud Session, Mira Device and audience-bound Shiyan/Relay credentials are retained rather than rewritten.
+
+### Two distinct user-facing remote entry paths
+
+1. **Cloud entry**: Desktop and Mobile sign into the *same* Mira Cloud Account, register as separate installations and automatically associate/discover a usable Desktop Host. They do **not** repeat QR pairing, one-time pairing claims or on-site Desktop approval. At Desktop Cloud login, the owner explicitly defines the Mobile Host capability/scope grants. OAuth 2.0 is the chosen authorization protocol for this entry, with OIDC if needed for standard client identity semantics; root username/password still uses existing Mira Cloud Account authority. Later grant edits and revocations are managed from the Cloud Auth account/device authorization UI without physical Desktop access. Day-to-day Tool calls do not initiate a fresh interactive OAuth authorization or synchronous Cloud introspection per invocation.
+2. **Non-Cloud entry**: Tailscale Direct continues with the existing Remote V1 QR/Host-approved pairing and Host-owned device credential. It requires no Cloud Account. Cloud hosted Relay and no-cloud Tailscale are **independent entry paths**: no automatic Direct↔Relay fallback, shared entry identity, accidental cross-path credential reuse or opaque automatic switching.
+3. Mobile remains local-first; its own local camera/files etc remain available to Mobile itself. Phase III **does not** let Desktop or another Agent remotely invoke Mobile camera, location, files or device capabilities.
+
+### Authentication, grant and execution authorities
+
+- **Cloud Auth**: existing account/password and revocable device-bound sessions; standard OAuth 2.0 authorization for the new cross-device Cloud Host entry; explicit Desktop→Mobile, scoped Host grant record and revocation authority; Cloud Portal grant management. Device registration alone is *not* blanket Tool permission. The Desktop defines permitted scopes at login; registered same-account devices can associate without an extra in-person step.
+- **Hosted Relay**: separately audience-bound connection ticket, room and role; transport frames only. A `relay:transport` ticket cannot authorize a Desktop business route.
+- **Desktop Remote Gateway / Harness**: validates an effective, cached or verifiable Host grant and applies existing Host owner/capability scope, canonical route, Policy and exact-invocation approval. Only individual Tool-level high-risk operations may need their existing in-session confirmation; this is distinct from the eliminated **device pairing approval**. No network call to Cloud Auth for every Tool operation.
+- **Grant lifecycle**: engineering must settle OAuth 2.0/OIDC endpoint/client registration and native-app PKCE exchange where applicable, audience/Host+Mobile binding, scope, lifetime, revocation/version propagation and fail-closed semantics. Cloud grant changes must become effective at Host according to an explicitly testable bounded contract, rather than only vanishing from a UI device list; do not claim instant remote revocation when Host is disconnected and operating on previously valid offline evidence. This is an engineering protocol decision, not an unresolved product decision.
+- Preserve Remote V1 manifest, scope mapping, Gateway, Tool Gateway, Host-owned AgentRun and Artifact authority; do not create a second capability registry or general-purpose permission engine. How a Cloud grant is bridged into Remote V1 authority is the narrow G research/implementation outcome in #315, **not** implicitly an expansion of closed OPS-006 or existing two-audience OPS-008.
+
+### Shiyan, future Cloud MCP and migration
+
+- Signed-in Cloud users access **new Cloud Shiyan** without a second end-user login. New Shiyan business data is isolated by Mira Cloud Account at the Shiyan service authorization boundary. **No compatibility migration of legacy Shiyan user data**; legacy credential/code may be retired based on real consumers but is not a pilot acceptance requirement.
+- Future Cloud MCP services may reuse the Cloud Account, audience-bound service credentials and service-specific account isolation pattern established by new Shiyan. Building a general Cloud MCP ecosystem is **not** a required Phase III delivery.
+- Only two actual users presently exist. Do not create a legacy end-user migration program for obsolete mixed Remote pairing state; preserve the still-supported no-cloud Tailscale product path itself.
+- Existing implementation remains observable truth: account/password + Cloud Sessions (OPS-006), Mira Device lifecycle on `cloud-auth/dev` (OPS-007), Shiyan/Relay JWT + JWKS on `dev` (OPS-008), Remote V1 Host `mira_device_*` and mixed selection. Documentation of the *target* does not mean new OAuth endpoints, Host grants, Portal controls, or standalone Cloud Relay entry have been implemented.
+
+### Required Phase III verification
+
+Real Desktop and Mobile sign into one Cloud account → automatic association/discovery of eligible Desktop Host → login-time grant permits scoped Mobile invocation over hosted Relay without QR/on-site approval → changes/removals through Cloud Auth Portal are enforced at Host → a high-risk operation receives its *specific* Harness approval if required → logout/revocation and Cloud/Relay/Host downtime are handled correctly. Separately prove independent no-cloud Tailscale pairing; new Shiyan cross-account data isolation; no cross-entry implicit fallback or unintended Mobile device exposure.
+
+---
 
 ## 1. Product conclusion
 
@@ -63,7 +94,7 @@ V0 should treat a device as an installation identity, not a hardware serial numb
 
 A Mira Desktop installation may act as a Remote Host. Host business state and Host authorization remain authoritative on the Desktop.
 
-Cloud ownership of a device does not automatically grant another same-account device permission to execute Host capabilities.
+Cloud device registration by itself does not grant blanket Host Tool authority. For the Cloud entry, same-account Desktop/Mobile installations auto-associate under scopes deliberately granted when Desktop signs in; Remote Host enforces the effective grant. No QR/in-person claim is required.
 
 ### Cloud Session
 
@@ -107,7 +138,8 @@ Authentication and authorization are separate.
 - account allow/disable state;
 - Mira Device registration/revocation;
 - Cloud Session issuance/revocation;
-- service credential issuance.
+- service credential issuance;
+- Phase III OAuth 2.0-based Cloud Host grant issuance/management/revocation as a separately scoped implementation outcome (not part of the completed OPS-006 or existing OPS-008 two-audience service contract).
 
 ### Cloud Shiyan owns
 
@@ -379,7 +411,7 @@ Do not create a second Remote Capability Registry, a second Host business author
 - invite codes;
 - application/review workflow;
 - email verification;
-- OAuth/social login;
+- third-party/social login; **standard OAuth 2.0 authorization for the Phase III Cloud Host entry is now required; this exclusion applied only to the initial 2026-10-22 V0 account/password bootstrap**.
 - Passkeys;
 - user-facing token management;
 - Redis/PostgreSQL solely for V0 Auth;
@@ -398,7 +430,7 @@ Do not create a second Remote Capability Registry, a second Host business author
 
 ## 15. Effect on Phase III
 
-This research does not add a third fixed Phase III product goal and does not rewrite #315.
+This original AGT-025 research did not add a third Phase III product goal; **the maintainer has since revised #315 on 2026-10-25, and §0 of this document is its authorized design delta**.
 
 For Desktop ↔ Mobile cross-device capability:
 
