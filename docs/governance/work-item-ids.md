@@ -71,6 +71,7 @@ The first governance version uses this deliberately small registry. Do not grow 
 | `FOL` | Folio publishing/runtime product | `@uichat-mira/folio`, schemas, runtime, package/site/release line |
 | `OPS` | Organization operational/control-plane services | Control Room, observability, operational AI Review gateway/projections |
 | `SHY` | Shiyan product/cloud service | Cross-client Shiyan contracts and Cloud Shiyan runtime; Mobile-only implementation refactors may remain `MOB` |
+| `GLN` | Guanlan news collection/cloud service | Cloud Guanlan ingestion, subscriptions, per-consumer state and service API contracts |
 | `REL` | Remote Host relay/transport | Relay protocol/service and cross-repo transport work whose primary outcome is relay connectivity |
 
 There is deliberately **no `BEN`** prefix. Current Benchmark work is part of the Agent platform and uses `AGT` unless Benchmark later becomes a genuinely independent product/capability domain.
@@ -102,6 +103,7 @@ The current Organization portfolio maps to domains by primary outcome, not mecha
 | `control-room` | Organization observability, public read API/MCP, AI Review operational gateway | Distinct operational/control-plane domain |
 | `folio` | Independent Git-native publishing/runtime package and official site | Stable product/runtime identity merits its own domain |
 | `cloud-shiyan` | Organization-owned Shiyan cloud runtime | Stable Shiyan product/service domain |
+| `cloud-guanlan` | Mira Cloud news collection and consumer-state service | Stable Guanlan product identity; future service Issues use `GLN` when the primary outcome belongs to Guanlan, while shared Worker platform work remains `AGT` |
 | `uichat-mira-relay` | Remote Host transport-only relay service | Stable transport/relay domain |
 
 A dormant repository such as `uichat-website` does **not** create a needless extra domain. If it is reactivated, its work can use `WEB`.
