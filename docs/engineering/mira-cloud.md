@@ -114,6 +114,8 @@ Do not use Organization migration as a pretext for unrelated architecture rewrit
 
 When a service migration and an architecture change are both desired, preserve a rollback anchor and make each change independently verifiable. A clean new repository MAY be used when the architecture boundary itself is intentionally being replaced, but the old repository/deployment MUST remain available until the new path passes real acceptance.
 
+For optional Agent-facing inter-service tool interoperability, see the discussion proposal [Mira Cloud MCP Inter-service Collaboration](./mira-cloud-mcp.md). It does not replace this baseline or impose MCP on all internal RPC.
+
 ## 10. Current direction
 
 For new Mira Cloud work, prefer:
