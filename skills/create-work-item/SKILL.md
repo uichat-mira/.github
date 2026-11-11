@@ -113,6 +113,21 @@ A useful test is: **Can a maintainer make one clear accept / return decision fro
 
 Do not create umbrella/meta tracking Issues by default as a substitute for independently verifiable work. Use one only when the maintainer explicitly wants a coordination/tracking contract that has a meaningful acceptance boundary of its own.
 
+### 4a. Check execution viability, not only business coherence
+
+A work item can be independently acceptable yet too large for a single unattended coding-agent execution. Before finalizing an implementation Issue, inspect relevant current code, dependencies, expected verification, and the intended executor/runtime (Mira, DSH, OpenCode Worker, or a human). Evaluate:
+
+- **Runnable scope:** how many independently risky boundaries are touched (schema/migration, API, UI, auth, external integration, build/release), and whether each requires a separate check or rollback.
+- **Budget fit:** plausible repository discovery, implementation, regression testing, troubleshooting, and **recoverable handoff** within the actual executor's bounded runtime. A 30/60-minute workflow ceiling is a risk budget, not guaranteed productive model time or a universal hard size limit.
+- **Prerequisites:** whether dependencies, target code, test fixtures, credentials/permissions, and verification harness already exist. Do not budget unbuilt infrastructure or unexplained browser automation as if it were a cheap check.
+- **Continuation boundary:** the smallest working, independently testable slice that another executor can accept or safely continue without reconstructing an expired runner's workspace.
+
+If the likely execution exceeds the available budget, choose separate implementation slices with real interfaces, meaningful tests and explicit dependencies; or allocate the work to an executor with an appropriate runtime. Do **not** split an atomic transactional behavior into pieces that cannot be safely verified or merged independently, and do **not** impose a fixed file-count or one-size-fits-all minute limit.
+
+For tasks likely to need multiple attempts, state the bounded deliverable, existing prerequisites, minimum verification evidence and handoff expectations. A fresh run must inspect any prior branch/PR/recovery artifact before starting over; never assume a cancelled Action means no useful code was produced. Distinguish **workflow success** from an accepted work item, and count repeated dispatches against the task's delivery cost.
+
+This viability check applies to cards intended for ChatGPT maintainers and DSH as well as GitHub OpenCode Workers. It is a design check, **not** a new independent authority to create extra Issues, dispatch workers or change Project metadata.
+
 ### 5. Write the Organization Work Item contract
 
 Follow [`../../.github/ISSUE_TEMPLATE/work-item.yml`](../../.github/ISSUE_TEMPLATE/work-item.yml). Use:
