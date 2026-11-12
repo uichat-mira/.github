@@ -1,0 +1,29 @@
+name: Mira Worker Candidate Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/worker-candidate/**'
+      - '.github/workflows/mira-worker-candidate-contract.yml'
+      - 'docs/governance/external-worker-candidate.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile Candidate tools
+        run: |
+          python3 -m py_compile \
+            .github/scripts/worker-candidate/candidate.py \
+            .github/scripts/worker-candidate/fixture.py
+
+      - name: Run Candidate round-trip and failure fixtures
+        run: python3 .github/scripts/worker-candidate/fixture.py
