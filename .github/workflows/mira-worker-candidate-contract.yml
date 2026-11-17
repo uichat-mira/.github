@@ -75,6 +75,9 @@ jobs:
           assert "contents: write" in delivery
           assert "pull-requests: write" in delivery
           assert "secrets." not in delivery
+          assert "opencode run" not in delivery
+          assert "opencode_go_api_key" not in delivery
+          assert "provider_api_key" not in delivery
           assert "Download Verify evidence" in delivery
           assert "Assert verified Candidate identity" in delivery
           assert "Commit and push exact verified Candidate" in delivery
@@ -299,17 +302,101 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Record intentional verification failure without Delivery
+      - name: Checkout exact fixture base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download preserved Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.fixture-worker-capture.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agt-058-verify-failure/candidate
+
+      - name: Restore Candidate before intentional verification failure
         shell: bash
+        env:
+          BASE_SHA: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ needs.fixture-worker-capture.outputs.contract_fingerprint }}
         run: |
           set -euo pipefail
-          set +e
-          bash -lc 'exit 17'
-          rc="$?"
-          set -e
-          test "$rc" -eq 17
-          printf '{"terminal_status":"failure","delivery_allowed":false}\n' > verify-failure.json
-          jq -e '.terminal_status == "failure" and .delivery_allowed == false' verify-failure.json >/dev/null
+          root="${RUNNER_TEMP}/agt-058-verify-failure"
+          python3 .github/scripts/worker-candidate/candidate.py restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number 58 \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT"
+          test "$(git write-tree)" = "${{ needs.fixture-worker-capture.outputs.tree_oid }}"
+
+      - name: Record intentional repository verification failure
+        id: verification_failure
+        continue-on-error: true
+        shell: bash
+        run: exit 17
+
+      - name: Assert Candidate remains preserved and Delivery is forbidden
+        shell: bash
+        env:
+          VERIFY_OUTCOME: ${{ steps.verification_failure.outcome }}
+        run: |
+          set -euo pipefail
+          test "$VERIFY_OUTCOME" = failure
+          test -s "${RUNNER_TEMP}/agt-058-verify-failure/candidate/candidate.patch"
+          test -s "${RUNNER_TEMP}/agt-058-verify-failure/candidate/candidate.json"
+          printf '{"terminal_status":"failure","candidate_preserved":true,"delivery_allowed":false}\n' > verify-failure.json
+          jq -e '.terminal_status == "failure" and .candidate_preserved == true and .delivery_allowed == false' verify-failure.json >/dev/null
+
+  fixture-delivery-failure:
+    needs:
+      - fixture-worker-capture
+      - fixture-verify
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert Delivery phase has verified Candidate and no model authority
+        shell: bash
+        env:
+          WORKER_PATCH: ${{ needs.fixture-worker-capture.outputs.patch_sha256 }}
+          WORKER_TREE: ${{ needs.fixture-worker-capture.outputs.tree_oid }}
+          VERIFY_PATCH: ${{ needs.fixture-verify.outputs.patch_sha256 }}
+          VERIFY_TREE: ${{ needs.fixture-verify.outputs.tree_oid }}
+        run: |
+          set -euo pipefail
+          test "$WORKER_PATCH" = "$VERIFY_PATCH"
+          test "$WORKER_TREE" = "$VERIFY_TREE"
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow = Path(".github/workflows/mira-external-worker.yml").read_text()
+          delivery = workflow[workflow.index("\n  delivery:"):]
+          assert "opencode run" not in delivery
+          assert "opencode_go_api_key" not in delivery
+          assert "provider_api_key" not in delivery
+          assert "secrets." not in delivery
+          PY
+
+      - name: Simulate GitHub Delivery failure after Verify PASS
+        id: delivery_failure
+        continue-on-error: true
+        shell: bash
+        run: exit 23
+
+      - name: Assert failure is isolated to Delivery
+        shell: bash
+        env:
+          DELIVERY_OUTCOME: ${{ steps.delivery_failure.outcome }}
+        run: |
+          set -euo pipefail
+          test "$DELIVERY_OUTCOME" = failure
+          printf '{"verify":"success","delivery":"failure","model_rerun_required":false}\n' > delivery-failure.json
+          jq -e '.verify == "success" and .delivery == "failure" and .model_rerun_required == false' delivery-failure.json >/dev/null
 
   fixture-delivery:
     needs:
