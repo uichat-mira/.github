@@ -231,7 +231,7 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/0801d513eebeb5cfe260a43bad2cce480609a13d/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/uichat-mira/.github/1e677775e2ce3aed57c3aca2ab6a95bbfa4b72b5/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
@@ -1418,7 +1418,11 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
-          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          RUN_WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          CANDIDATE_BASE_SHA: ${{ steps.handoff.outputs.candidate_base_sha }}
+          WORKER_BRANCH: ${{ steps.handoff.outputs.worker_branch }}
+          CANDIDATE_ORIGIN_RUN_ID: ${{ steps.handoff.outputs.candidate_origin_run_id }}
+          CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
           FREE_MODE: ${{ inputs.free_mode }}
@@ -1555,7 +1559,11 @@ jobs:
               "issue_number": int(os.getenv("ISSUE_NUMBER")) if os.getenv("ISSUE_NUMBER") else None,
               "base_branch": os.getenv("BASE_BRANCH"),
               "base_sha": os.getenv("BASE_SHA") or identity.get("base_sha"),
+              "run_worker_branch": os.getenv("RUN_WORKER_BRANCH") or identity.get("worker_branch"),
+              "candidate_base_sha": os.getenv("CANDIDATE_BASE_SHA") or os.getenv("BASE_SHA") or identity.get("base_sha"),
               "worker_branch": os.getenv("WORKER_BRANCH") or identity.get("worker_branch"),
+              "candidate_origin_run_id": os.getenv("CANDIDATE_ORIGIN_RUN_ID") or identity.get("run_id"),
+              "candidate_origin_run_attempt": os.getenv("CANDIDATE_ORIGIN_RUN_ATTEMPT") or identity.get("run_attempt"),
               "requested_provider": os.getenv("REQUESTED_PROVIDER") or "opencode-go",
               "requested_provider_profile": os.getenv("REQUESTED_PROVIDER_PROFILE") or None,
               "requested_provider_registry_ref": os.getenv("REQUESTED_PROVIDER_REGISTRY_REF") or None,
