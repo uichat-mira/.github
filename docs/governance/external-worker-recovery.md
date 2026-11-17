@@ -96,11 +96,14 @@ Prior Worker narration remains diagnostic only and never becomes trusted PASS ev
 
 When prior Verify evidence says PASS for the same Candidate identity and Delivery is incomplete/failed:
 
+- the Candidate keeps its original exact `base_sha`; Delivery does not silently rebase a verified tree merely because the named target branch advanced;
+- the Draft PR still targets the explicit current base branch name, so any new merge conflict remains visible for maintainer judgment;
 - provider resolution is skipped;
 - OpenCode installation is skipped;
 - model execution is skipped;
 - a fresh Verify is skipped;
 - the prior Candidate and trusted Verify evidence are downloaded, revalidated, and re-published into the new run;
+- provider/profile/model-route provenance is carried from the trusted Recovery pointer (with manifest fallback for older pointers);
 - Delivery restores the exact verified Candidate again and retries only Git branch/commit/Draft-PR delivery.
 
 This makes transient GitHub Delivery failure independent from model cost.
