@@ -310,6 +310,40 @@ def main() -> None:
         assert json.loads(retry_again_path.read_text())["mode"] == "delivery_retry_only"
         print("PASS decision: retry run can validate original Candidate and current Delivery evidence")
 
+        verify_failed_delivery_pointer = dict(
+            verify_fail_pointer, delivery_state="failure",
+        )
+        verify_failed_delivery_pointer_path = root / "verify-failed-delivery-pointer.json"
+        write(verify_failed_delivery_pointer_path, verify_failed_delivery_pointer)
+        invalid_delivery = {
+            "schema_version": 1,
+            "job_role": "delivery",
+            "repository": "uichat-mira/.github",
+            "run_id": pointer["run_id"],
+            "run_attempt": pointer["run_attempt"],
+            "base_sha": manifest["base_sha"],
+            "candidate_patch_sha256": manifest["candidate_patch_sha256"],
+            "candidate_tree_oid": manifest["candidate_tree_oid"],
+            "terminal_status": "failure",
+            "stages": {"restore": "success", "verified_identity": "success", "commit_push": "failure"},
+        }
+        invalid_delivery_path = root / "verify-failed-delivery.json"
+        write(invalid_delivery_path, invalid_delivery)
+        invalid_delivery_result = root / "verify-failed-delivery-result.json"
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(verify_failed_delivery_pointer_path),
+            "--candidate-manifest", str(manifest_path),
+            "--verify-run", str(verify_fail_path),
+            "--delivery-run", str(invalid_delivery_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(invalid_delivery_result),
+        )
+        assert json.loads(invalid_delivery_result.read_text())["mode"] == "recovery_failed"
+        print("PASS decision: Delivery evidence without Verify PASS fails closed")
+
         delivery_ok_path = root / "delivery-ok.json"
         delivery_ok = {
             "schema_version": 1,
