@@ -153,7 +153,6 @@ jobs:
         id: identity
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
         run: |
@@ -702,6 +701,7 @@ jobs:
         if: ${{ always() && steps.checkout.outcome == 'success' && steps.identity.outcome == 'success' && steps.worker.outcome != 'skipped' }}
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
