@@ -146,7 +146,7 @@ The canonical reusable External Worker is split into three real GitHub Actions j
    - checks out the same exact `base_sha`, downloads the same Candidate and Verify evidence, restores again, and mechanically rechecks patch/tree identity;
    - commits only the restored verified tree;
    - asserts the resulting commit tree equals the verified Candidate tree;
-   - is the only job with `contents: write` and `pull-requests: write`, solely for pushing the isolated Worker branch and opening the Draft PR.
+   - is the only job with `contents: write` and `pull-requests: write`; it has no Issue permission and uses those writes solely for pushing the isolated Worker branch and opening the Draft PR.
 
 The Candidate implementation is still pinned to immutable AGT-056 commit `c5d93e149765f9068f3d342d2aed3a40a8f20efc`. A successful Verify or Delivery restore means the exact frozen code state was reproduced; it never grants merge, Issue outcome, release, deployment, or promotion authority.
 
