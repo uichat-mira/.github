@@ -421,10 +421,13 @@ def main() -> None:
         tampered_delivery_path = root / "tampered-delivery.json"
         write(tampered_delivery_path, tampered_delivery)
         bad_delivery_path = root / "bad-delivery.json"
+        tampered_delivery_pointer = dict(verify_ok_pointer, delivery_state="failure")
+        tampered_delivery_pointer_path = root / "tampered-delivery-pointer.json"
+        write(tampered_delivery_pointer_path, tampered_delivery_pointer)
         run(
             "decide",
             "--current-contract", str(contract_path),
-            "--pointer", str(verify_ok_pointer_path),
+            "--pointer", str(tampered_delivery_pointer_path),
             "--candidate-manifest", str(manifest_path),
             "--verify-run", str(verify_ok_path),
             "--delivery-run", str(tampered_delivery_path),
