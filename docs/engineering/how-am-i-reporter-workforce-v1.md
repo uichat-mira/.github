@@ -5,19 +5,20 @@ Review date: 2026-11-17
 Protocol owner: uichat-mira/.github  
 Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Control Room
 
-> **维护者已确定的方向**：产品名「号脉」，英文名「How Am I」，技术代号 `how-am-i`。V1 **只接 Mira 的赛博施工队**，不做组织级通用应用日志，**不增加 Cloudflare 费用**。本合同不是施工授权，也不代表代码、Cloudflare 部署或真运行验收已完成。
+> **维护者已确定的方向**：产品名「号脉」，英文名「How Am I」，技术代号 `how-am-i`。V1 **只接 Mira 的赛博施工队**，这是首家上报方而非永久唯一上报方；后续可支持为线上临时 Debug 授权的短期上报方，但**不属于 V1**。本期不做组织级通用应用日志，**不增加 Cloudflare 费用**。本合同不是施工授权，也不代表代码、Cloudflare 部署或真运行验收已完成。
 
 ## 0. 决策记录与边界
 
 ### 0.1 已确定（2026-11-17 评审结束）
 
-1. 「号脉（How Am I）」是 **Worker Workforce 专用的轻量施工运行观测服务**；「Mira Logs」退役为历史工作名称，不再是产品名。
+1. 「号脉（How Am I）」是 **轻量运行观测服务**；Worker Workforce / External Worker Reporter 是**V1 第一家、唯一实际接入的上报方**，不是对未来来源的永久排他限制。「Mira Logs」退役为历史工作名称，不再是产品名。
 2. 只接 Mira External Worker 的可信 Reporter。Cloud Auth、Mobile、Desktop 仓库**中的施工 Run**可以上报，三个产品自己的认证、客户端或服务端生产日志**不属于号脉 V1**。
 3. 新增运行费用预算为 **0**：最多增加一个 Cloudflare Workers Free HTTP 接收 Worker，借助其自身 Workers Logs 实现短期事件查询；不增服务器、D1、R2、KV、DO、Queues、日志 SaaS 账单或自建数据库。
 4. 号脉只收脱敏的关键阶段、异常、运行状态和限量诊断事件，不收原始终端输出、完整 Agent trajectory、Prompt、模型回答、源码和每个 Token。
 5. GitHub Issue/Actions/Artifact/PR 继续分别拥有任务、运行、Candidate 和交付事实；Workforce 管理调度，Control Room/血汗工厂 TV 做观察，均不能维护第二套任务与恢复真相。
 6. 首批产品 caller 接入目标是 Cloud Auth、Mobile、Desktop；复用**同一个**组织共享 External Worker 引擎，不在各产品里重复造记者。
 7. 在真正验证独立凭据隔离、持续事件来源和传输时延之前，不能把阶段性 Reporter 宣传成“模型逐工具实时直播”。
+8. **未来扩展方向（明确非 V1）**：允许维护者为线上临时 Debug 授予有明确来源、期限、权限和自动失效条件的**临时上报方**。本期不实现临时上报方注册、凭据签发/撤销、跨应用事件协议、生产日志采集或相应 UI，也不为未来做提前通用化。
 
 ### 0.2 已核实的当前工程现实
 
@@ -99,7 +100,7 @@ GitHub Issue (task contract)
 | GitHub Actions | 执行身份、job/run 终态 | 模型自述的替身 |
 | Candidate/Verify/Delivery Artifacts & PR | 代码恢复、验证和交付证据 | Reporter 的口头叙述 |
 | Reporter | 从可信 Job/evidence 形成阶段报道，从受限流形成 telemetry | 验收/合并/发布者 |
-| 号脉 | 短期施工现场、异常诊断、短留存事件查询 | 永久证据库或多应用日志平台 |
+| 号脉 | V1 短期施工现场、异常诊断、短留存事件查询；未来可扩展受控临时 Debug 上报 | 永久证据库、V1 通用多应用日志平台 |
 | Worker Workforce | Worker 能力/负荷/显式调度/续工选择 | 第二个 Issue/Run 台账 |
 | Control Room / TV | 读模型、直播/回放展示 | 拥有工单/密钥/未经许可的远程执行 |
 
@@ -107,9 +108,9 @@ Reporter 的 “pipeline verified” 必须源自 trusted Verify 而非 OpenCode
 
 ## 3. 号脉 V1 接入与事件合同
 
-### 3.1 接口只开放给受信任 Reporter
+### 3.1 V1 接口只开放给受信任 Reporter
 
-- `POST /v1/events`：HTTPS + JSON，**只授权一个 Reporter 服务身份**（固定 `app_id = mira-worker-reporter`），不开放通用注册、租户/App 管理、客户端 SDK 或任何 Mobile/Desktop 直连写入。
+- `POST /v1/events`：HTTPS + JSON，**V1 只授权一个 Reporter 服务身份**（首期固定 `app_id = mira-worker-reporter`），不开放通用注册、租户/App 管理、客户端 SDK 或任何 Mobile/Desktop 直连写入。该 app_id 是首期来源标识，不能被实现成永久只允许这一来源的不可演进协议假设。
 - `GET /health`：只返回基础服务存活/schema 版本，不泄漏内部来源、凭据或日志。
 - V1 **没有**通用 `GET /events` / `SQL` / 公共搜索 API；按 Run 查询先通过 Cloudflare 原生后台与受控 API 实测，Control Room 的受控投影另做一张卡。
 - `202 Accepted` 仅表示接收端完成校验并尝试写日志，不承诺“已持久化”“可按 Run 检索”或 exactly-once。不可用/校验失败须明确 4xx/5xx/429，不虚报成功。
@@ -152,7 +153,7 @@ Reporter 的 “pipeline verified” 必须源自 trusted Verify 而非 OpenCode
 
 任何 Tool 事件、heartbeat、provider retry 属于 Live Reporter **受控扩展**，不自动开启。禁收完整 stdout/stderr、trajectory、Prompt、推理或工具参数、变更代码、环境变量、HTTP auth/cookie 和包含用户数据的任意 metadata。仅允许固定 error_code + stage + 短脱敏摘要。
 
-### 3.3 HMAC：固定 Reporter 机器身份，而不是多 App 产品体系
+### 3.3 HMAC：V1 只有 Reporter 机器身份，不预建多 App 产品体系
 
 头字段：
 - `X-Haomai-App-Id` = `mira-worker-reporter`；
@@ -164,7 +165,7 @@ Reporter 的 “pipeline verified” 必须源自 trusted Verify 而非 OpenCode
 
 **必须写明限制**：没有 KV/DO/D1 的 V1 无法在全球边缘强制“一次使用 nonce”，因此仅具有限时窗口和身份完整性保护、并不强保证 anti-replay 或事件唯一性。event_id 可做读取端去重，不得用于财务、权限或交付侧写操作。
 
-不用泛用 AppID 目录、多租户密钥发放、客户端 Token 交换、移动端 SDK、跨应用日志方案。轮换时允许受控双密钥短窗口和吊销旧密钥；仅可信维护者配置。
+本期不用泛用 AppID 目录、多租户密钥发放、客户端 Token 交换、移动端 SDK、跨应用日志方案。轮换时允许受控双密钥短窗口和吊销旧密钥；仅可信维护者配置。未来临时上报方应采用独立短期授权与隔离、可到期/撤销、来源与事件范围约束、量级/脱敏限制；是否沿用同一 HMAC 或采用其他短期凭据，留给届时的独立技术合同与真实威胁模型裁决，**V1 不实现**。
 
 ## 4. Reporter：有事件，更要有独立权限边界
 
@@ -229,6 +230,7 @@ T1/T2 合同测试：HMAC 原文绑定、错误密钥、重复事件、过期时
 5. **不接受大爆炸式上线**。A～F 逐一有证据后再推广。产品 caller 升级、GitHub permissions、额外日志读取权限、Cloudflare 生产部署都需要单独明确授权。
 6. **不承诺永久存储**。号脉只用于短期排障与受控事件观察，失效/过期/限流不得造成 Worker 主线失败。
 7. **合同本身非验收结果**。方向已经评审，技术 POC、真实安全边界、运行成本和 Cloudflare Query API 权限仍待证据确定。
+8. **保留未来上报方入口，不扩大 V1 范围**。任何线上临时 Debug 上报方都必须另立协议与授权，包括明确生效/过期时间、可撤销凭据、隔离、数据分类、频率与成本预算；未授权时不得接收，更不得把临时上报提升为系统运行事实。
 
 ## 9. 上游参考
 
