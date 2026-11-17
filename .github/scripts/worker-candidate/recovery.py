@@ -142,7 +142,7 @@ def fingerprint(args: argparse.Namespace) -> int:
         "fingerprint_version": "mira-contract-v1",
         "issue": {
             "number": issue.get("number"),
-            "title": normalize_text(issue.get("title")),
+            "title": normalize_text(issue.get("title")).strip(),
             "body": normalize_text(issue.get("body")),
         },
         "trusted_amendments": amendments,
