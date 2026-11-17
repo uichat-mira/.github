@@ -1630,7 +1630,7 @@ jobs:
 
   verify:
     needs: worker_capture
-    if: ${{ needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' }}
+    if: ${{ needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' }}
     permissions:
       contents: read
       issues: none
