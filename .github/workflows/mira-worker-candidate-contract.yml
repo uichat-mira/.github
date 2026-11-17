@@ -151,6 +151,10 @@ jobs:
           assert "4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" in worker
           assert "candidate_origin_run_id" in recovery_index
           assert "candidate_artifact_id" in recovery_index
+          assert "normalize_artifact_digest" in worker
+          assert 'pointer_artifact_digest="$(normalize_artifact_digest' in worker
+          assert 'normal_candidate_digest="$(normalize_artifact_digest' in worker
+          assert 'recovered_candidate_digest="$(normalize_artifact_digest' in worker
           assert "contract_fingerprint" in recovery_index
           assert "ambiguity_guard" in recovery_index
           PY
