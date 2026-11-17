@@ -11,6 +11,7 @@ This repository contains organization-wide engineering policy, reusable SOPs, Gi
 - [Environment Model](docs/engineering/environment-model.md) — `feat/* → dev → test → prod`
 - [Mira Cloud Core Specification](docs/engineering/mira-cloud.md) — shared backend naming, service boundaries, client contracts, and unified authentication semantics
 - [Mira Cloud MCP Inter-service Collaboration](docs/engineering/mira-cloud-mcp.md) — lightweight optional MCP collaboration, service identity, delegated authorization, tool contracts, and validation (proposal)
+- [Mira Logs / Reporter / Worker Workforce V1 Contract](docs/engineering/mira-logs-reporter-workforce-v1.md) — zero-new-cost observability, trusted reporting and GitHub-owned workforce control (proposal)
 - [Organization Testing Standard](docs/engineering/testing-standard.md) — shared test layers, command semantics, CI evidence, and promotion gates
 
 ## SOP
