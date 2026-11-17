@@ -78,7 +78,13 @@ jobs:
         id: validate
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          PATH: /usr/bin:/bin
+          BASH_ENV: ''
+          ENV: ''
+          PYTHONPATH: ''
+          PYTHONHOME: ''
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
           ISSUE_NUMBER: ${{ inputs.issue_number }}
         run: |
           set -euo pipefail
@@ -712,11 +718,9 @@ jobs:
           set -euo pipefail
 
           root="${RUNNER_TEMP}/mira-worker"
-          gh api "repos/uichat-mira/.github/contents/.github/scripts/worker-candidate/candidate.py?ref=c5d93e149765f9068f3d342d2aed3a40a8f20efc" \
-            --jq '.content' \
-            | tr -d '\n' \
-            | base64 --decode \
-            > "${root}/trusted-candidate.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            -o "${root}/trusted-candidate.py"
           test -s "${root}/trusted-candidate.py"
           echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${root}/identity.txt"
 
