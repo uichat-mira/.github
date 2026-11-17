@@ -262,6 +262,17 @@ jobs:
             --issue-number "$ISSUE_NUMBER" \
             --output "${recovery_root}/discovery.json"
 
+          if test "$(jq -r '.invalid_latest_pointer // false' "${recovery_root}/discovery.json")" = "true"; then
+            invalid_comment_id="$(jq -r '.invalid_pointer_comment_id' "${recovery_root}/discovery.json")"
+            jq -n --arg comment "$invalid_comment_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"latest_recovery_pointer_invalid",source_comment_id:$comment}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "source_run_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if test "$(jq -r '.found' "${recovery_root}/discovery.json")" != "true"; then
             jq -n \
               --arg fingerprint "$current_fingerprint" \
