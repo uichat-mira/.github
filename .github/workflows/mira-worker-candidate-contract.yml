@@ -148,6 +148,7 @@ jobs:
           assert "mira-recovery-candidate:v1" in recovery_index
           assert "invalid_latest_pointer" in worker
           assert "latest_recovery_pointer_invalid" in worker
+          assert "4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" in worker
           assert "candidate_origin_run_id" in recovery_index
           assert "candidate_artifact_id" in recovery_index
           assert "contract_fingerprint" in recovery_index
