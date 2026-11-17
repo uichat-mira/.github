@@ -198,37 +198,65 @@ def discover(args: argparse.Namespace) -> int:
     if not isinstance(comments, list):
         raise RecoveryError("comments must be a list")
     pointers = []
+    invalid_markers = []
     for comment in comments:
         if not isinstance(comment, dict):
             continue
         user = comment.get("user") or {}
         if user.get("login") != "github-actions[bot]" or user.get("type") != "Bot":
             continue
-        pointer = parse_pointer(comment.get("body") or "")
+        body = comment.get("body") or ""
+        if RECOVERY_MARKER_START not in body:
+            continue
+        pointer = parse_pointer(body)
         if not pointer:
+            invalid_markers.append({
+                "comment_id": comment.get("id"),
+                "created_at": comment.get("created_at") or "",
+            })
             continue
         if pointer.get("repository") != args.repository:
             continue
         if int(pointer.get("issue_number") or 0) != args.issue_number:
             continue
         pointer["_comment_id"] = comment.get("id")
-        pointer["_comment_created_at"] = comment.get("created_at")
+        pointer["_comment_created_at"] = comment.get("created_at") or ""
         pointers.append(pointer)
 
+    # Candidate origin is the freshness boundary. A delayed Delivery-only retry
+    # may publish later, but must never replace a Candidate from a newer run.
     pointers.sort(
         key=lambda x: (
-            x.get("_comment_created_at") or "",
+            as_int("Candidate origin run id", x.get("candidate_origin_run_id")),
+            as_int("Candidate origin run attempt", x.get("candidate_origin_run_attempt")),
             as_int("pointer run id", x.get("run_id")),
             as_int("pointer run attempt", x.get("run_attempt")),
             as_int("pointer comment id", x.get("_comment_id")),
         ),
         reverse=True,
     )
+
+    latest_valid_comment = max(
+        ((x.get("_comment_created_at") or "", as_int("pointer comment id", x.get("_comment_id"))) for x in pointers),
+        default=None,
+    )
+    latest_invalid_marker = max(
+        ((x.get("created_at") or "", as_int("invalid pointer comment id", x.get("comment_id"))) for x in invalid_markers),
+        default=None,
+    )
+    invalid_latest_pointer = bool(
+        latest_invalid_marker is not None
+        and (latest_valid_comment is None or latest_invalid_marker > latest_valid_comment)
+    )
     result = {
         "schema_version": 1,
-        "found": bool(pointers),
-        "pointer": pointers[0] if pointers else None,
+        "found": bool(pointers) or invalid_latest_pointer,
+        "pointer": pointers[0] if pointers and not invalid_latest_pointer else None,
         "pointer_count": len(pointers),
+        "invalid_latest_pointer": invalid_latest_pointer,
+        "invalid_pointer_comment_id": (
+            latest_invalid_marker[1] if invalid_latest_pointer and latest_invalid_marker else None
+        ),
     }
     dump_json(result, args.output)
     return 0
