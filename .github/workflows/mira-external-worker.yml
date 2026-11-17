@@ -316,6 +316,18 @@ jobs:
             verify_download_rc="$?"
             set -e
             if test "$verify_download_rc" -ne 0; then
+              prior_verify_state="$(jq -r '.verification_state // "skipped"' "${recovery_root}/pointer.json")"
+              if test "$prior_verify_state" = "success" || test "$prior_verify_state" = "failure"; then
+                jq -n \
+                  --arg run "$source_run_id" \
+                  --arg artifact "$verify_artifact_name" \
+                  '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_artifact_unavailable_or_expired",source_run_id:$run,verification_artifact_name:$artifact}' \
+                  > "${root}/recovery-state.json"
+                printf 'Historical Verify pointer exists for run %s, but Artifact %s is unavailable or expired.\n' "$source_run_id" "$verify_artifact_name" > "${root}/recovery-context.txt"
+                echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+                echo "run_worker=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               verify_artifact_name=""
             fi
           fi
@@ -325,7 +337,19 @@ jobs:
             gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
               --name "$delivery_artifact_name" --dir "${recovery_root}/delivery" \
               >"${recovery_root}/delivery-download.stdout" 2>"${recovery_root}/delivery-download.stderr"
+            delivery_download_rc="$?"
             set -e
+            prior_delivery_state="$(jq -r '.delivery_state // "skipped"' "${recovery_root}/pointer.json")"
+            if test "$delivery_download_rc" -ne 0 && test "$prior_delivery_state" = "success"; then
+              jq -n \
+                --arg run "$source_run_id" \
+                --arg artifact "$delivery_artifact_name" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"successful_delivery_evidence_unavailable",source_run_id:$run,delivery_artifact_name:$artifact}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
 
           decision_args=(
@@ -350,9 +374,20 @@ jobs:
 
           if test "$mode" = "recoverable" || test "$mode" = "delivery_retry_only"; then
             exact_root="${recovery_root}/exact-base"
-            git worktree add --detach "$exact_root" "$prior_base_sha"
             set +e
-            python3 "${root}/trusted-candidate.py" restore \
+            git worktree add --detach "$exact_root" "$prior_base_sha" \
+              >"${recovery_root}/worktree.stdout" 2>"${recovery_root}/worktree.stderr"
+            worktree_rc="$?"
+            set -e
+            if test "$worktree_rc" -ne 0; then
+              jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="candidate_base_unavailable"' \
+                "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+              mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+              mode="recovery_failed"
+              run_worker="false"
+            else
+              set +e
+              python3 "${root}/trusted-candidate.py" restore \
               --repo "$exact_root" \
               --candidate-dir "${recovery_root}/candidate" \
               --expected-repository "$GITHUB_REPOSITORY" \
@@ -360,16 +395,17 @@ jobs:
               --expected-base-sha "$prior_base_sha" \
               --expected-contract-fingerprint "$current_fingerprint" \
               >"${recovery_root}/exact-restore.stdout" 2>"${recovery_root}/exact-restore.stderr"
-            exact_restore_rc="$?"
-            set -e
-            git worktree remove --force "$exact_root"
+              exact_restore_rc="$?"
+              set -e
+              git worktree remove --force "$exact_root"
 
-            if test "$exact_restore_rc" -ne 0; then
-              jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="candidate_exact_restore_failed"' \
-                "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
-              mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
-              mode="recovery_failed"
-              run_worker="false"
+              if test "$exact_restore_rc" -ne 0; then
+                jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="candidate_exact_restore_failed"' \
+                  "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+                mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+                mode="recovery_failed"
+                run_worker="false"
+              fi
             fi
           fi
 
@@ -1376,7 +1412,11 @@ jobs:
           candidate["contract_fingerprint"] = os.getenv("CONTRACT_FINGERPRINT") or None
           candidate["ambiguity_guard"] = os.getenv("AMBIGUITY_GUARD") or None
           candidate["artifact_retention_days"] = 14
-          if candidate.get("state") == "captured":
+          if recovery.get("mode") == "delivery_retry_only":
+              candidate["state"] = "captured"
+              candidate["recoverable"] = True
+              candidate["reason"] = "verified_candidate_republished_for_delivery_retry"
+          if candidate.get("state") == "captured" and recovery.get("mode") != "delivery_retry_only":
               if os.getenv("CANDIDATE_UPLOAD_OUTCOME") == "success":
                   candidate["recoverable"] = True
                   candidate["reason"] = None
@@ -1430,7 +1470,7 @@ jobs:
               "artifact_retention_days": 14,
               "safety": {
                   "github_permissions": {"actions": "read", "contents": "read", "issues": "read", "pull_requests": "none"},
-                  "provider_credentials_present": os.getenv("FREE_MODE") != "true",
+                  "provider_credentials_present": os.getenv("FREE_MODE") != "true" and os.getenv("WORKER_OUTCOME") not in {None, "", "skipped"},
                   "github_write_authority": False,
                   "raw_environment_persisted": False,
                   "provider_credentials_persisted": False,
