@@ -13,7 +13,7 @@ Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Contr
 
 1. 「号脉（How Am I）」是 **轻量运行观测服务**；Worker Workforce / External Worker Reporter 是**V1 第一家、唯一实际接入的上报方**，不是对未来来源的永久排他限制。「Mira Logs」退役为历史工作名称，不再是产品名。
 2. 只接 Mira External Worker 的可信 Reporter。Cloud Auth、Mobile、Desktop 仓库**中的施工 Run**可以上报，三个产品自己的认证、客户端或服务端生产日志**不属于号脉 V1**。
-3. 新增运行费用预算为 **0**：最多增加一个 Cloudflare Workers Free HTTP 接收 Worker，借助其自身 Workers Logs 实现短期事件查询；不增服务器、D1、R2、KV、DO、Queues、日志 SaaS 账单或自建数据库。
+3. **号脉观测基础设施新增费用为 0**：最多增加一个 Cloudflare Workers Free HTTP 接收 Worker，借助其自身 Workers Logs 实现短期事件查询；不增服务器、D1、R2、KV、DO、Queues、日志 SaaS 账单或自建数据库。**这不是禁止调用付费模型**：在现有权限和模型路由内，真实 Worker/Reporter 端到端验证可以使用付费 Provider，调用与费用按原施工体系单独记账。
 4. 号脉只收脱敏的关键阶段、异常、运行状态和限量诊断事件，不收原始终端输出、完整 Agent trajectory、Prompt、模型回答、源码和每个 Token。
 5. GitHub Issue/Actions/Artifact/PR 继续分别拥有任务、运行、Candidate 和交付事实；Workforce 管理调度，Control Room/血汗工厂 TV 做观察，均不能维护第二套任务与恢复真相。
 6. 首批产品 caller 接入目标是 Cloud Auth、Mobile、Desktop；复用**同一个**组织共享 External Worker 引擎，不在各产品里重复造记者。
@@ -219,11 +219,11 @@ Control Room 继续负责只读投影；其现有 Worker 可以另行增加**受
 
 T1/T2 合同测试：HMAC 原文绑定、错误密钥、重复事件、过期时间戳、恶意 JSON、超长字符串、签名比较、非法 event kind、隐私字段与注入；T3 Worker runtime 完成一次受限接收；T4 **必须在真实 Cloudflare 免费账号测试**查询、CPU、凭据、费额与可见范围。未有 T4，不能称号脉“已可查、可直播”。
 
-限量诊断事件如 Run 启动/结束、Candidate/Verify/Delivery 等只在 POC 验证流中启用；真实模型费用与 GitHub Actions 额外运行都必须单独识别，不能以“Cloudflare 免费”推论所有施工免费。
+限量诊断事件如 Run 启动/结束、Candidate/Verify/Delivery 等只在 POC 验证流中启用。**允许在 B/E 真实端到端验证中调用现有已授权的付费模型**，以证明实际施工路径、Reporter 事件源和时间顺序；但 A 的纯日志接收/验签/查询验证无需为形式消耗模型额度。付费 Run 要记录 Provider/model route、真实调用次数与可得 usage/费用，缺失项标 unknown；禁止无界重复调用。真实模型费用与 GitHub Actions 运行成本均与“号脉 Cloudflare 新增费用为 0”的基础设施预算分开核算。
 
 ## 8. 实施门禁 / 非目标
 
-1. **不接受付费前提**。若某功能只有付费版可达，报告阻塞，由维护者决定明确降级产品合同；不得自动采购、开户、部署付费资源。
+1. **号脉 Cloudflare 基础设施不接受付费前提**。若日志存储/查询等基础能力只有付费 Cloudflare 服务可达，报告阻塞，由维护者决定降级合同；不得自动采购、开户、开通付费 Cloudflare 产品。**已授权的付费模型调用不受此条禁止**，但不得因此无界增加模型调用或把新增基础设施费用混入模型预算。
 2. **不接受伪查询**。号脉若只能在 Dashboard 看而无法安全用 API 按 Run 检索，必须区分“控制台可排障”与“TV 可编程查询”；不能偷偷引入数据库。
 3. **不接受假直播**。模型 Runtime 无法证明安全实时观察时，保留阶段性 Reporter，不向施工进程下发秘密上报 Token。
 4. **不接受任务真相漂移**。Workforce/TV 与 GitHub 状态冲突时显示来源并以 GitHub 为准；不能自动合并、关闭、晋级或发布。
