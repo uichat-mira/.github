@@ -361,6 +361,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout workflow under test
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Assert Delivery phase has verified Candidate and no model authority
         shell: bash
         env:
