@@ -140,7 +140,7 @@ The canonical reusable External Worker is split into three real GitHub Actions j
    - downloads the immutable Candidate Artifact;
    - restores it with the pinned AGT-056 Candidate primitive and verifies patch digest / reconstructed tree identity;
    - runs the caller-owned verification command only after restore succeeds;
-   - has read-only GitHub permissions and no provider credential.
+   - has only `contents: read`; same-run Candidate Artifact transfer uses the Actions artifact runtime without granting REST `actions` permission, and no provider credential is present.
 3. **Delivery**
    - starts on another fresh runner only after Verify succeeds;
    - checks out the same exact `base_sha`, downloads the same Candidate and Verify evidence, restores again, and mechanically rechecks patch/tree identity;
