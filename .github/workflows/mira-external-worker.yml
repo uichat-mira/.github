@@ -225,7 +225,7 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/06c60e27b9cb16288ccdc82e03e3ef185a79e802/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/uichat-mira/.github/95149cb0a73edcac73d2aff6c5cec078829d3316/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
