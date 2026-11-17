@@ -24,7 +24,7 @@ Diagnostic evidence such as `worker-run.json`, trajectories, model output, verif
 | `run_id` / `run_attempt` | Execution identity for the Worker attempt. |
 | `base_branch` | Explicit delivery-base branch name captured as provenance. |
 | `base_sha` | Exact Git commit used to construct the Candidate. Restore must run at this exact commit. |
-| `contract_fingerprint` | Lowercase `sha256:<64 hex>` value produced by the AGT-059 deterministic Issue/amendment contract fingerprint. |
+| `contract_fingerprint` | Lowercase `sha256:<64 hex>` value produced by the AGT-059 deterministic execution-aware fingerprint over the Issue/amendments, explicit base branch, and verification-command hash. |
 | `candidate_patch_sha256` | Lowercase SHA-256 digest of `candidate.patch`, prefixed with `sha256:`. |
 | `candidate_patch_bytes` | Exact patch byte length. |
 | `candidate_tree_oid` | Git tree OID produced from the frozen Candidate index. |
@@ -152,7 +152,7 @@ The Candidate implementation is still pinned to immutable AGT-056 commit `c5d93e
 
 The current Candidate Artifact retention remains 14 days. This is a bounded recovery window, not permanent storage.
 
-AGT-059 replaces the transitional fingerprint with the deterministic Recovery contract described in [`external-worker-recovery.md`](external-worker-recovery.md). Candidate reuse requires both the canonical contract fingerprint and the ambiguity guard to match.
+AGT-059 replaces the transitional fingerprint with the deterministic execution-aware Recovery contract described in [`external-worker-recovery.md`](external-worker-recovery.md). Candidate reuse requires both the canonical fingerprint and ambiguity guard to match; changing the target base branch or caller verification command prevents silent reuse.
 
 ### Failure semantics after AGT-058
 
@@ -160,7 +160,7 @@ AGT-059 replaces the transitional fingerprint with the deterministic Recovery co
 - Candidate capture/upload failure remains non-recoverable and explicit.
 - Verify restore/digest/tree failure stops before Delivery and therefore produces no Git push or Draft PR.
 - Repository verification failure leaves the Candidate and Verify evidence intact and produces no Delivery.
-- Delivery failure occurs after a verified Candidate exists; AGT-059 records it as `delivery_retry_only` and retries trusted Delivery without re-running the model.
+- Delivery failure occurs after a verified Candidate exists; AGT-059 records it as `delivery_retry_only`, validates the prior Delivery evidence, and retries idempotently on the Candidate-origin branch without re-running the model.
 - Hard runner loss, force cancellation, platform termination, and hostile same-runner compromise remain outside the guarantee.
 
 ### Caller compatibility and rollout boundary
