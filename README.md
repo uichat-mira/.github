@@ -22,6 +22,7 @@ This repository contains organization-wide engineering policy, reusable SOPs, Gi
 - [Source of Truth](docs/governance/source-of-truth.md) — responsibilities of Issues, Projects, organization docs, runtime state, and mira.tomz.io
 - [External Worker Provider and Model](docs/governance/external-worker-provider-model.md) — run-scoped provider/profile/model selection for the reusable External Worker
 - [External Worker Evidence Package](docs/governance/external-worker-evidence.md) — bounded evidence package emitted by the reusable External Worker
+- [External Worker Candidate Recovery](docs/governance/external-worker-recovery.md) — cross-run Candidate discovery, contract fingerprinting, fail-closed continuation, and Delivery-only retry
 
 ## Collaboration Skills
 

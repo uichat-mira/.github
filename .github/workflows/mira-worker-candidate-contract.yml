@@ -25,12 +25,22 @@ jobs:
         run: |
           python3 -m py_compile \
             .github/scripts/worker-candidate/candidate.py \
-            .github/scripts/worker-candidate/fixture.py
+            .github/scripts/worker-candidate/fixture.py \
+            .github/scripts/worker-candidate/recovery.py \
+            .github/scripts/worker-candidate/recovery_fixture.py \
+            .github/scripts/worker-candidate/delivery.py \
+            .github/scripts/worker-candidate/delivery_fixture.py
 
       - name: Run Candidate round-trip and rejection fixtures
         run: python3 .github/scripts/worker-candidate/fixture.py
 
-      - name: Assert production split-job topology and permissions
+      - name: Run Recovery contract fixtures
+        run: python3 .github/scripts/worker-candidate/recovery_fixture.py
+
+      - name: Run Delivery idempotency fixtures
+        run: python3 .github/scripts/worker-candidate/delivery_fixture.py
+
+      - name: Assert production split-job topology, Recovery and permissions
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -40,22 +50,39 @@ jobs:
           worker_start = workflow.index("  worker_capture:")
           verify_start = workflow.index("\n  verify:", worker_start)
           delivery_start = workflow.index("\n  delivery:", verify_start)
+          recovery_index_start = workflow.index("\n  recovery_index:", delivery_start)
 
           worker = workflow[worker_start:verify_start]
           verify = workflow[verify_start:delivery_start]
-          delivery = workflow[delivery_start:]
+          delivery = workflow[delivery_start:recovery_index_start]
+          recovery_index = workflow[recovery_index_start:]
 
           assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
-          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url }}" in workflow
+          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}" in workflow
 
+          assert "actions: read" in worker
           assert "contents: read" in worker
           assert "issues: read" in worker
           assert "pull-requests: none" in worker
           assert "contents: write" not in worker
           assert "pull-requests: write" not in worker
+          assert "Discover and prepare Candidate Recovery" in worker
+          assert "mira-recovery-candidate:v1" not in worker
+          assert "recovery_failed" in worker
+          assert "delivery_retry_only" in worker
+          assert "candidate_artifact_unavailable_or_expired" in worker
+          assert "base_advanced_clean_3way" in worker
+          assert "base_advanced_3way_conflict" in worker
+          assert "Re-publish verified Candidate for Delivery-only retry" in worker
+          assert "candidate_base_sha" in worker
+          assert "--base-branch \"$BASE_BRANCH\"" in worker
+          assert "--verification-command \"$VERIFICATION_COMMAND\"" in worker
+          assert "candidate_artifact_identity_mismatch_or_expired" in worker
+          assert "candidate_exact_restore_failed" in worker
+          assert "Report already delivered Candidate" in worker
           assert "Capture durable Candidate" in worker
           assert "Run trusted repository verification" not in worker
-          assert "Commit and push exact verified Candidate" not in worker
+          assert "Commit/push or reuse exact verified Candidate branch" not in worker
 
           assert "needs: worker_capture" in verify
           assert "contents: read" in verify
@@ -72,8 +99,21 @@ jobs:
           assert "Require verified Candidate" in verify
 
           assert "needs:\n      - worker_capture\n      - verify" in delivery
+          assert "delivery_retry_only" in delivery
+          assert "Resolve verified Delivery handoff" in delivery
+          assert "Commit/push or reuse exact verified Candidate branch" in delivery
+          assert 'python3 "$root/trusted-delivery.py" ensure-branch' in delivery
+          assert 'python3 "$root/trusted-delivery.py" ensure-pr' in delivery
+          boundary_start = delivery.index("Verify Draft PR and exact Candidate delivery boundary")
+          boundary = delivery[boundary_start:]
+          assert "needs.verify.outputs.candidate_tree_oid" not in boundary
+          assert "steps.verified_handoff.outputs.candidate_tree_oid" in boundary
+          assert "delivery_complete" in delivery
+          assert "needs.worker_capture.outputs.candidate_base_sha" in delivery
           assert "contents: write" in delivery
           assert "issues: none" in delivery
+          assert "issues: write" not in delivery
+          assert "actions: read" not in delivery
           assert "pull-requests: write" in delivery
           assert "secrets." not in delivery
           assert "opencode run" not in delivery
@@ -81,12 +121,42 @@ jobs:
           assert "provider_api_key" not in delivery
           assert "Download Verify evidence" in delivery
           assert "Assert verified Candidate identity" in delivery
-          assert "Commit and push exact verified Candidate" in delivery
+          assert "Commit/push or reuse exact verified Candidate branch" in delivery
           assert "Create Draft PR with durable handoff" in delivery
           assert "Verify Draft PR and exact Candidate delivery boundary" in delivery
+          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}" in workflow
+          assert "pull_request_url: $" + "{{ steps.handoff.outputs.pull_request_url }}" in worker
+          assert "RECOVERED_CANDIDATE_UPLOAD_OUTCOME" in worker
+          assert "RECOVERED_VERIFY_UPLOAD_OUTCOME" in worker
+          assert "verify_evidence_republish" in worker
+          assert "recovery_mode != 'delivery_complete'" in recovery_index
+          assert "recovered_candidate_upload_outcome == 'success'" in recovery_index
+          assert "recovered_verify_upload_outcome == 'success'" in recovery_index
+          assert "recovered_candidate_upload_outcome" in worker
+          assert "recovered_verify_upload_outcome" in worker
+          assert not any(line.strip().startswith("timeout-minutes:") and "inputs.timeout_minutes" in line for line in workflow.splitlines())
+          assert "default: 60" in workflow
+          assert "SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}" in worker
+          assert "NOT a hard deadline" in worker
+          assert '--head-owner "$GITHUB_REPOSITORY_OWNER"' in delivery
 
-          assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit and push exact verified Candidate")
-          assert delivery.index("Commit and push exact verified Candidate") < delivery.index("Create Draft PR with durable handoff")
+          assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit/push or reuse exact verified Candidate branch")
+          assert delivery.index("Commit/push or reuse exact verified Candidate branch") < delivery.index("Create Draft PR with durable handoff")
+
+          assert "issues: write" in recovery_index
+          assert "contents: none" in recovery_index
+          assert "mira-recovery-candidate:v1" in recovery_index
+          assert "invalid_latest_pointer" in worker
+          assert "latest_recovery_pointer_invalid" in worker
+          assert "4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" in worker
+          assert "candidate_origin_run_id" in recovery_index
+          assert "candidate_artifact_id" in recovery_index
+          assert "normalize_artifact_digest" in worker
+          assert 'pointer_artifact_digest="$(normalize_artifact_digest' in worker
+          assert 'normal_candidate_digest="$(normalize_artifact_digest' in worker
+          assert 'recovered_candidate_digest="$(normalize_artifact_digest' in worker
+          assert "contract_fingerprint" in recovery_index
+          assert "ambiguity_guard" in recovery_index
           PY
 
   fixture-worker-capture:
@@ -469,3 +539,94 @@ jobs:
           git config user.email "fixture@example.invalid"
           git commit -qm "fixture: exact verified candidate"
           test "$(git rev-parse HEAD^{tree})" = "$manifest_tree"
+
+
+  fixture-recovery-base-advance:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Recovery tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prove clean 3-way continuation and conflict fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-059-base"
+          mkdir -p "$root"
+
+          make_repo() {
+            local repo="$1"
+            mkdir -p "$repo"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name "Mira Recovery Fixture"
+            git -C "$repo" config user.email "fixture@example.invalid"
+            printf 'base\n' > "$repo/work.txt"
+            printf 'stable\n' > "$repo/unrelated.txt"
+            git -C "$repo" add -A
+            git -C "$repo" commit -qm base
+          }
+
+          # Candidate from base, then base advances in a non-conflicting file.
+          clean="$root/clean"
+          make_repo "$clean"
+          base_sha="$(git -C "$clean" rev-parse HEAD)"
+          printf 'candidate\n' > "$clean/work.txt"
+          python3 .github/scripts/worker-candidate/candidate.py capture \
+            --repo "$clean" \
+            --output "$root/clean-candidate" \
+            --repository "uichat-mira/recovery-fixture" \
+            --issue-number 59 \
+            --run-id 1 \
+            --run-attempt 1 \
+            --base-branch main \
+            --base-sha "$base_sha" \
+            --contract-fingerprint "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+            --worker-outcome failure
+          git -C "$clean" reset --hard -q "$base_sha"
+          printf 'advanced\n' > "$clean/unrelated.txt"
+          git -C "$clean" add -A
+          git -C "$clean" commit -qm "advance unrelated"
+          current_sha="$(git -C "$clean" rev-parse HEAD)"
+          git -C "$clean" merge-base --is-ancestor "$base_sha" "$current_sha"
+          git -C "$clean" apply --3way --index --whitespace=nowarn -- "$root/clean-candidate/candidate.patch"
+          git -C "$clean" reset -q
+          test "$(cat "$clean/work.txt")" = candidate
+          test "$(cat "$clean/unrelated.txt")" = advanced
+          git -C "$clean" diff --check
+          echo "PASS Recovery base advance: clean 3-way continuation"
+
+          # Candidate and current base both change the same line differently.
+          conflict="$root/conflict"
+          make_repo "$conflict"
+          conflict_base="$(git -C "$conflict" rev-parse HEAD)"
+          printf 'candidate-side\n' > "$conflict/work.txt"
+          python3 .github/scripts/worker-candidate/candidate.py capture \
+            --repo "$conflict" \
+            --output "$root/conflict-candidate" \
+            --repository "uichat-mira/recovery-fixture" \
+            --issue-number 59 \
+            --run-id 2 \
+            --run-attempt 1 \
+            --base-branch main \
+            --base-sha "$conflict_base" \
+            --contract-fingerprint "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+            --worker-outcome failure
+          git -C "$conflict" reset --hard -q "$conflict_base"
+          printf 'current-side\n' > "$conflict/work.txt"
+          git -C "$conflict" add -A
+          git -C "$conflict" commit -qm "advance conflicting"
+          set +e
+          git -C "$conflict" apply --3way --index --whitespace=nowarn -- "$root/conflict-candidate/candidate.patch" \
+            >"$root/conflict.stdout" 2>"$root/conflict.stderr"
+          conflict_rc="$?"
+          set -e
+          test "$conflict_rc" -ne 0
+          git -C "$conflict" reset --hard -q HEAD
+          git -C "$conflict" clean -fdq
+          test "$(cat "$conflict/work.txt")" = current-side
+          echo "PASS Recovery base advance: conflict fails closed"

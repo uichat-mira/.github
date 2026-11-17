@@ -2,7 +2,7 @@
 
 Status: active Organization guidance.
 
-The Mira External Worker emits bounded, role-specific evidence artifacts across Worker/Capture, Verify, and Delivery. These artifacts complement GitHub Actions logs; they do not replace the GitHub Issue, Candidate, branch, commit, pull request, or Actions run as the durable engineering ledger.
+The Mira External Worker emits bounded, role-specific evidence artifacts across Worker/Capture, Verify, Delivery, and Recovery. These artifacts complement GitHub Actions logs; they do not replace the GitHub Issue, Candidate, branch, commit, pull request, or Actions run as the durable engineering ledger.
 
 ## Package
 
@@ -12,8 +12,9 @@ AGT-058 separates evidence by execution boundary:
 
 The `mira-external-worker-<run_id>` Artifact contains bounded Worker/Capture evidence such as:
 
-- `worker-run.json` — Worker/Capture run identity, provider/model route, stage outcomes, Candidate pointer/recoverability and permission metadata;
+- `worker-run.json` — Worker/Capture run identity, provider/model route, stage outcomes (including Candidate/Verify evidence re-publication on Delivery-only retry), Recovery mode/source, Candidate pointer/recoverability and permission metadata;
 - `identity.txt`, `issue.json`, trusted-maintainer comment snapshot and `provider-route.json` — durable handoff inputs needed by later trusted stages;
+- `contract.json`, `recovery-state.json`, Recovery context and discovered pointer metadata when applicable;
 - metadata-only trajectory/session summary;
 - bounded Worker output;
 - `candidate-status.json` plus bounded Candidate capture stdout/stderr;
@@ -38,9 +39,13 @@ The `mira-external-worker-delivery-<run_id>-<attempt>` Artifact records:
 - `delivery-run.json` — restored Candidate identity, commit/push/Draft-PR stages, commit SHA, PR URL and Delivery authority boundary;
 - Delivery restore result when available.
 
-Delivery evidence exists independently of Worker model execution. A Delivery failure after Verify PASS therefore does not require the model to run again.
+Delivery evidence exists independently of Worker model execution. A Delivery failure after Verify PASS therefore does not require the model to run again. The evidence is identity-checked before retry; missing evidence after a Delivery attempt fails closed because partial push/PR side effects may already exist.
 
 Exact filenames remain implementation detail. The durable contract is that evidence is machine-readable, bounded, attributable to one immutable run/Candidate identity, and reflects the actual job boundary that produced it.
+
+## Worker time budget
+
+The reusable workflow's `timeout_minutes` input is a 60-minute advisory planning budget, not a hard job or step timeout. A Worker is not terminated merely because the budget elapses. GitHub-hosted runner platform limits remain an external ceiling and are explicitly outside the recovery guarantee.
 
 ## Provider/model identity
 
@@ -84,13 +89,23 @@ Current bounds:
 
 Truncation is explicit in companion metadata rather than silently dropping content.
 
+## Recovery pointer
+
+AGT-059 publishes a machine-readable `github-actions[bot]` comment on the owning Issue for each durable Candidate. The comment points to the pointer run and Candidate-origin run, Candidate Artifact ID/digest, exact base/base branch, deterministic Worker branch, contract fingerprint/ambiguity guard, exact Candidate digest/tree identity, Verify state and Delivery state. It is an index/projection only; underlying Artifacts and Git state remain the facts to validate.
+
+Because the pointer persists after Artifact retention expires, later runs can report historical-but-unavailable Recovery state instead of pretending no previous work existed.
+
+Pointer selection follows Candidate-origin run ID/attempt, so a delayed Delivery retry cannot supersede a newer Candidate merely by publishing later. A malformed newest bot-authored Recovery marker fails closed. An already delivered Candidate returns its original branch and Draft PR URL as a successful no-op, without publishing another pointer.
+
 ## Failure semantics
 
 AGT-058 no longer compresses the entire pipeline into one terminal status. The Actions job graph and role-specific evidence distinguish:
 
 - **Worker/Capture failure** — no Verify or Delivery is authorized; a successfully uploaded Candidate may still be recoverable.
 - **Verify failure** — Candidate and Verify evidence remain; Delivery is skipped, so no branch push or Draft PR is created.
-- **Delivery failure** — Verify already passed for the same Candidate identity; Delivery evidence records the failed stage, and the model does not need to run again merely to retry Git delivery.
+- **Delivery failure** — Verify already passed for the same Candidate identity; the next run may enter `delivery_retry_only`, reusing trusted Verify evidence without provider/model execution. Branch and Draft PR delivery are idempotent: an exact existing Candidate branch/PR is reused, while mismatched existing state fails closed.
+- **Delivery-only retry** — Candidate and Verify evidence re-publication outcomes are recorded separately; Delivery is allowed only when both re-publications succeeded.
+- **Already delivered** — a later dispatch returns the previously verified branch/PR identity without creating a new branch, rerunning Verify, or creating another PR.
 - **Success** — Delivery commit tree is mechanically equal to the verified Candidate tree and the resulting PR is Draft against the explicit delivery base.
 
 A local patch is never considered recoverable until its Candidate Artifact upload succeeds. A Candidate is never considered verified merely because Worker self-tests passed. A verified Candidate is never considered delivered merely because Verify passed.

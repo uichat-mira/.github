@@ -16,10 +16,10 @@ on:
         required: true
         type: string
       timeout_minutes:
-        description: Maximum execution time (minutes) for the Worker job
+        description: Advisory Worker planning budget (minutes); never used as a hard termination timeout
         required: false
         type: number
-        default: 30
+        default: 60
       free_mode:
         description: Run keyless official OpenCode CLI v2 on allowlisted free models
         required: false
@@ -57,8 +57,8 @@ on:
         description: Isolated worker branch name reserved from the explicit base
         value: ${{ jobs.worker_capture.outputs.worker_branch }}
       pull_request_url:
-        description: Draft pull request URL when verified Delivery succeeds
-        value: ${{ jobs.delivery.outputs.pull_request_url }}
+        description: Draft pull request URL from current Delivery or an already delivered Candidate
+        value: ${{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}
 
 permissions:
   contents: read
@@ -68,22 +68,39 @@ permissions:
 jobs:
   worker_capture:
     permissions:
+      actions: read
       contents: read
       issues: read
       pull-requests: none
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
-      worker_branch: ${{ steps.identity.outputs.worker_branch }}
+      worker_branch: ${{ steps.handoff.outputs.worker_branch }}
+      pull_request_url: ${{ steps.handoff.outputs.pull_request_url }}
       base_sha: ${{ steps.identity.outputs.base_sha }}
-      candidate_artifact_name: ${{ steps.candidate.outputs.artifact_name }}
-      candidate_patch_sha256: ${{ steps.candidate.outputs.patch_sha256 }}
-      candidate_tree_oid: ${{ steps.candidate.outputs.tree_oid }}
-      contract_fingerprint: ${{ steps.candidate.outputs.contract_fingerprint }}
-      provider: ${{ steps.provider.outputs.provider }}
-      provider_profile: ${{ steps.provider.outputs.provider_profile }}
-      provider_registry_ref: ${{ steps.provider.outputs.provider_registry_ref }}
-      model_route: ${{ steps.provider.outputs.model_route }}
+      candidate_base_sha: ${{ steps.handoff.outputs.candidate_base_sha }}
+      candidate_origin_run_id: ${{ steps.handoff.outputs.candidate_origin_run_id }}
+      candidate_origin_run_attempt: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
+      candidate_base_branch: ${{ steps.handoff.outputs.candidate_base_branch }}
+      model: ${{ steps.handoff.outputs.model }}
+      recovery_mode: ${{ steps.handoff.outputs.recovery_mode }}
+      recovery_source_run_id: ${{ steps.handoff.outputs.recovery_source_run_id }}
+      candidate_artifact_name: ${{ steps.handoff.outputs.candidate_artifact_name }}
+      candidate_artifact_id: ${{ steps.handoff.outputs.candidate_artifact_id }}
+      candidate_artifact_digest: ${{ steps.handoff.outputs.candidate_artifact_digest }}
+      recovered_candidate_upload_outcome: ${{ steps.recovered_candidate_upload.outcome }}
+      recovered_verify_upload_outcome: ${{ steps.recovered_verify_upload.outcome }}
+      candidate_patch_sha256: ${{ steps.handoff.outputs.candidate_patch_sha256 }}
+      candidate_tree_oid: ${{ steps.handoff.outputs.candidate_tree_oid }}
+      contract_fingerprint: ${{ steps.handoff.outputs.contract_fingerprint }}
+      ambiguity_guard: ${{ steps.handoff.outputs.ambiguity_guard }}
+      verification_artifact_name: ${{ steps.handoff.outputs.verification_artifact_name }}
+      verified_patch_sha256: ${{ steps.handoff.outputs.verified_patch_sha256 }}
+      verified_tree_oid: ${{ steps.handoff.outputs.verified_tree_oid }}
+      verified_contract_fingerprint: ${{ steps.handoff.outputs.verified_contract_fingerprint }}
+      provider: ${{ steps.handoff.outputs.provider }}
+      provider_profile: ${{ steps.handoff.outputs.provider_profile }}
+      provider_registry_ref: ${{ steps.handoff.outputs.provider_registry_ref }}
+      model_route: ${{ steps.handoff.outputs.model_route }}
 
     steps:
       - name: Validate Mira caller and work item
@@ -147,6 +164,7 @@ jobs:
                     id,
                     author: .user.login,
                     created_at,
+                    updated_at,
                     body: (.body // "")
                   }
               ]
@@ -199,7 +217,409 @@ jobs:
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "worker_branch=$worker_branch" >> "$GITHUB_OUTPUT"
 
+      - name: Discover and prepare Candidate Recovery
+        id: recovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          CURRENT_BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+
+          root="${RUNNER_TEMP}/mira-worker"
+          recovery_root="${root}/recovery"
+          mkdir -p "$recovery_root"
+
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" \
+            -o "${root}/trusted-recovery.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            -o "${root}/trusted-candidate.py"
+          test -s "${root}/trusted-recovery.py"
+          test -s "${root}/trusted-candidate.py"
+
+          python3 "${root}/trusted-recovery.py" fingerprint \
+            --issue-json "${root}/issue.json" \
+            --comments-json "${root}/maintainer-comments.json" \
+            --base-branch "$BASE_BRANCH" \
+            --verification-command "$VERIFICATION_COMMAND" \
+            --output "${root}/contract.json"
+
+          current_fingerprint="$(jq -r '.fingerprint' "${root}/contract.json")"
+          ambiguity_guard="$(jq -r '.ambiguity_guard' "${root}/contract.json")"
+          {
+            echo "contract_fingerprint=$current_fingerprint"
+            echo "ambiguity_guard=$ambiguity_guard"
+          } >> "$GITHUB_OUTPUT"
+
+          python3 "${root}/trusted-recovery.py" discover-pointer \
+            --comments-json "${root}/issue-comments.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number "$ISSUE_NUMBER" \
+            --output "${recovery_root}/discovery.json"
+
+          if test "$(jq -r '.invalid_latest_pointer // false' "${recovery_root}/discovery.json")" = "true"; then
+            invalid_comment_id="$(jq -r '.invalid_pointer_comment_id' "${recovery_root}/discovery.json")"
+            jq -n --arg comment "$invalid_comment_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"latest_recovery_pointer_invalid",source_comment_id:$comment}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            echo "source_run_id=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if test "$(jq -r '.found' "${recovery_root}/discovery.json")" != "true"; then
+            jq -n \
+              --arg fingerprint "$current_fingerprint" \
+              --arg guard "$ambiguity_guard" \
+              '{schema_version:1,mode:"fresh",run_worker:true,reuse_candidate:false,reason:"no_prior_candidate",contract_fingerprint:$fingerprint,ambiguity_guard:$guard}' \
+              > "${root}/recovery-state.json"
+            printf '%s\n' "No prior Recovery Candidate exists for this Issue. Start from the explicit current base." > "${root}/recovery-context.txt"
+            {
+              echo "mode=fresh"
+              echo "run_worker=true"
+              echo "source_run_id="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          jq '.pointer' "${recovery_root}/discovery.json" > "${recovery_root}/pointer.json"
+          source_run_id="$(jq -r '.run_id' "${recovery_root}/pointer.json")"
+          candidate_artifact_name="$(jq -r '.candidate_artifact_name // ""' "${recovery_root}/pointer.json")"
+          verify_artifact_name="$(jq -r '.verification_artifact_name // ""' "${recovery_root}/pointer.json")"
+          delivery_artifact_name="$(jq -r '.delivery_artifact_name // ""' "${recovery_root}/pointer.json")"
+          prior_base_sha="$(jq -r '.base_sha' "${recovery_root}/pointer.json")"
+
+          {
+            echo "source_run_id=$source_run_id"
+            echo "source_candidate_artifact_name=$candidate_artifact_name"
+            echo "source_verify_artifact_name=$verify_artifact_name"
+          } >> "$GITHUB_OUTPUT"
+
+          if test -z "$candidate_artifact_name"; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"prior_pointer_missing_candidate_artifact",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p "${recovery_root}/candidate" "${recovery_root}/verify" "${recovery_root}/delivery"
+          set +e
+          gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
+            --name "$candidate_artifact_name" --dir "${recovery_root}/candidate" \
+            >"${recovery_root}/candidate-download.stdout" 2>"${recovery_root}/candidate-download.stderr"
+          candidate_download_rc="$?"
+          set -e
+
+          if test "$candidate_download_rc" -ne 0 || ! test -s "${recovery_root}/candidate/candidate.json" || ! test -s "${recovery_root}/candidate/candidate.patch"; then
+            jq -n \
+              --arg run "$source_run_id" \
+              --arg artifact "$candidate_artifact_name" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_unavailable_or_expired_or_incomplete",source_run_id:$run,candidate_artifact_name:$artifact}' \
+              > "${root}/recovery-state.json"
+            printf 'Historical Candidate pointer exists for run %s, but Artifact %s is unavailable, expired, or incomplete.\n' "$source_run_id" "$candidate_artifact_name" > "${root}/recovery-context.txt"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          normalize_artifact_digest() {
+            local digest="${1:-}"
+            if test -z "$digest"; then
+              printf '%s' ""
+            elif [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf '%s' "$digest"
+            elif [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              printf 'sha256:%s' "$digest"
+            else
+              echo "::error::Invalid Artifact digest format." >&2
+              return 2
+            fi
+          }
+
+          pointer_artifact_id="$(jq -r '.candidate_artifact_id // ""' "${recovery_root}/pointer.json")"
+          pointer_artifact_digest="$(normalize_artifact_digest "$(jq -r '.candidate_artifact_digest // ""' "${recovery_root}/pointer.json")")"
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}/artifacts?per_page=100" \
+            > "${recovery_root}/artifact-list.json" 2> "${recovery_root}/artifact-list.stderr"
+          artifact_list_rc="$?"
+          set -e
+          if test "$artifact_list_rc" -ne 0; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_metadata_unavailable",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          artifact_matches="$(jq -c --arg name "$candidate_artifact_name" '[.artifacts[]? | select(.name == $name)]' "${recovery_root}/artifact-list.json")"
+          if test "$(jq 'length' <<< "$artifact_matches")" -ne 1; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_identity_ambiguous_or_missing",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          actual_artifact_id="$(jq -r '.[0].id' <<< "$artifact_matches")"
+          actual_artifact_digest="$(normalize_artifact_digest "$(jq -r '.[0].digest // ""' <<< "$artifact_matches")")"
+          actual_artifact_expired="$(jq -r '.[0].expired' <<< "$artifact_matches")"
+          if test "$actual_artifact_id" != "$pointer_artifact_id" || test "$actual_artifact_digest" != "$pointer_artifact_digest" || test "$actual_artifact_expired" != "false"; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_identity_mismatch_or_expired",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prior_verify_state="$(jq -r '.verification_state // "skipped"' "${recovery_root}/pointer.json")"
+          if test "$prior_verify_state" = "success" || test "$prior_verify_state" = "failure"; then
+            if test -z "$verify_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_artifact_pointer_missing",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            set +e
+            gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
+              --name "$verify_artifact_name" --dir "${recovery_root}/verify" \
+              >"${recovery_root}/verify-download.stdout" 2>"${recovery_root}/verify-download.stderr"
+            verify_download_rc="$?"
+            set -e
+            if test "$verify_download_rc" -ne 0 || ! test -s "${recovery_root}/verify/verify-run.json"; then
+              jq -n --arg run "$source_run_id" --arg artifact "$verify_artifact_name" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_artifact_unavailable_expired_or_incomplete",source_run_id:$run,verification_artifact_name:$artifact}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif test "$prior_verify_state" = "skipped"; then
+            if test -n "$verify_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_pointer_state_mismatch",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_pointer_state_invalid",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prior_delivery_state="$(jq -r '.delivery_state // "skipped"' "${recovery_root}/pointer.json")"
+          if test "$prior_delivery_state" = "success" || test "$prior_delivery_state" = "failure"; then
+            if test -z "$delivery_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_artifact_pointer_missing",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            set +e
+            gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
+              --name "$delivery_artifact_name" --dir "${recovery_root}/delivery" \
+              >"${recovery_root}/delivery-download.stdout" 2>"${recovery_root}/delivery-download.stderr"
+            delivery_download_rc="$?"
+            set -e
+            if test "$delivery_download_rc" -ne 0 || ! test -s "${recovery_root}/delivery/delivery-run.json"; then
+              jq -n --arg run "$source_run_id" --arg artifact "$delivery_artifact_name" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_artifact_unavailable_expired_or_incomplete",source_run_id:$run,delivery_artifact_name:$artifact}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif test "$prior_delivery_state" = "skipped"; then
+            if test -n "$delivery_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_pointer_state_mismatch",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_pointer_state_invalid",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prior_base_sha="$(jq -r '.base_sha' "${recovery_root}/pointer.json")"
+          prior_contract_fingerprint="$(jq -r '.contract_fingerprint' "${recovery_root}/pointer.json")"
+          exact_root="${recovery_root}/exact-base"
+          set +e
+          git worktree add --detach "$exact_root" "$prior_base_sha" \
+            >"${recovery_root}/worktree.stdout" 2>"${recovery_root}/worktree.stderr"
+          worktree_rc="$?"
+          set -e
+          if test "$worktree_rc" -ne 0; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_base_unavailable",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          python3 "${root}/trusted-candidate.py" restore \
+            --repo "$exact_root" \
+            --candidate-dir "${recovery_root}/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number "$ISSUE_NUMBER" \
+            --expected-base-sha "$prior_base_sha" \
+            --expected-contract-fingerprint "$prior_contract_fingerprint" \
+            >"${recovery_root}/exact-restore.stdout" 2>"${recovery_root}/exact-restore.stderr"
+          exact_restore_rc="$?"
+          set -e
+          git worktree remove --force "$exact_root"
+          if test "$exact_restore_rc" -ne 0; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_exact_restore_failed",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          decision_args=(
+            decide
+            --current-contract "${root}/contract.json"
+            --pointer "${recovery_root}/pointer.json"
+            --candidate-manifest "${recovery_root}/candidate/candidate.json"
+            --repository "$GITHUB_REPOSITORY"
+            --issue-number "$ISSUE_NUMBER"
+            --output "${root}/recovery-state.json"
+          )
+          if test -s "${recovery_root}/verify/verify-run.json"; then
+            decision_args+=(--verify-run "${recovery_root}/verify/verify-run.json")
+          fi
+          if test -s "${recovery_root}/delivery/delivery-run.json"; then
+            decision_args+=(--delivery-run "${recovery_root}/delivery/delivery-run.json")
+          fi
+          python3 "${root}/trusted-recovery.py" "${decision_args[@]}"
+
+          mode="$(jq -r '.mode' "${root}/recovery-state.json")"
+          run_worker="$(jq -r '.run_worker' "${root}/recovery-state.json")"
+
+
+
+          if test "$mode" = "recoverable"; then
+            if test "$prior_base_sha" = "$CURRENT_BASE_SHA"; then
+              python3 "${root}/trusted-candidate.py" restore \
+                --repo "$GITHUB_WORKSPACE" \
+                --candidate-dir "${recovery_root}/candidate" \
+                --expected-repository "$GITHUB_REPOSITORY" \
+                --expected-issue-number "$ISSUE_NUMBER" \
+                --expected-base-sha "$prior_base_sha" \
+                --expected-contract-fingerprint "$current_fingerprint" \
+                >"${recovery_root}/workspace-restore.json"
+              git reset
+              jq '.base_strategy="exact_base_restore"' "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+              mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+            elif git merge-base --is-ancestor "$prior_base_sha" "$CURRENT_BASE_SHA"; then
+              set +e
+              git apply --3way --index --whitespace=nowarn -- "${recovery_root}/candidate/candidate.patch" \
+                >"${recovery_root}/rebase.stdout" 2>"${recovery_root}/rebase.stderr"
+              rebase_rc="$?"
+              set -e
+              if test "$rebase_rc" -eq 0; then
+                git reset
+                jq '.base_strategy="base_advanced_clean_3way"' "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+                mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+              else
+                git reset --hard "$CURRENT_BASE_SHA"
+                git clean -fd
+                jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="base_advanced_3way_conflict" | .base_strategy="conflict_fail_closed"' \
+                  "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+                mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+                mode="recovery_failed"
+                run_worker="false"
+              fi
+            else
+              jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="candidate_base_diverged_from_current_base" | .base_strategy="diverged_fail_closed"' \
+                "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+              mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+              mode="recovery_failed"
+              run_worker="false"
+            fi
+          fi
+
+          export RECOVERY_STATE_FILE="${root}/recovery-state.json"
+          export RECOVERY_CONTEXT_FILE="${root}/recovery-context.txt"
+          export VERIFY_LOG="${recovery_root}/verify/verification.log"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          state = json.loads(Path(os.environ["RECOVERY_STATE_FILE"]).read_text())
+          verify_log = Path(os.environ["VERIFY_LOG"])
+          verification = verify_log.read_text(errors="replace")[:12000] if verify_log.exists() else "(none)"
+          text = [
+              "Mira Candidate Recovery context",
+              f"- mode: {state.get('mode')}",
+              f"- source run: {state.get('source_run_id')}",
+              f"- source base: {state.get('source_base_sha')}",
+              f"- reason: {state.get('reason')}",
+              f"- base strategy: {state.get('base_strategy', 'none')}",
+              "",
+              "Trusted prior verification evidence (if present):",
+              verification,
+              "",
+              "Rules:",
+              "- Existing restored code is prior Candidate work. Inspect and continue it; do not discard it merely to restart.",
+              "- Prior Worker narrative is not a trusted PASS.",
+              "- If prior verification failed, address that evidence first before repeating unrelated discovery.",
+              "- Contract drift means the old Candidate was NOT restored; implement only the current contract.",
+          ]
+          Path(os.environ["RECOVERY_CONTEXT_FILE"]).write_text("\n".join(text) + "\n")
+          PY
+
+          {
+            echo "mode=$mode"
+            echo "run_worker=$run_worker"
+            echo "source_run_id=$source_run_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Enforce Recovery fail-closed boundary
+        id: recovery_gate
+        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' }}
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
+        run: |
+          set -euo pipefail
+          echo "::error::Recovery stopped before model execution: ${RECOVERY_MODE}."
+          cat "${RUNNER_TEMP}/mira-worker/recovery-state.json" >&2
+          exit 1
+
+      - name: Report already delivered Candidate
+        if: ${{ steps.recovery.outputs.mode == 'delivery_complete' }}
+        shell: bash
+        run: |
+          echo "::notice::The latest trusted Candidate is already delivered. No Worker, Verify, or Delivery work is required."
+
       - name: Resolve run-scoped Worker provider route
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         id: provider
         shell: bash
         env:
@@ -329,6 +749,7 @@ jobs:
           echo "model_route=${model_route}" >> "$GITHUB_OUTPUT"
 
       - name: Load current Organization policy and pinned Skill
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         id: policy
         shell: bash
         env:
@@ -376,6 +797,7 @@ jobs:
           test -s AGENTS.md
 
       - name: Install pinned OpenCode CLI
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         id: install
         shell: bash
         run: |
@@ -388,6 +810,7 @@ jobs:
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Verify OpenCode version
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         id: version
         shell: bash
         run: |
@@ -400,6 +823,7 @@ jobs:
           fi
 
       - name: Run bounded external Worker
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         id: worker
         shell: bash
         env:
@@ -416,6 +840,7 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}
         run: |
           set -euo pipefail
 
@@ -511,6 +936,7 @@ jobs:
             end
           ' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
           org_policy="$(cat "${RUNNER_TEMP}/mira-worker/org-AGENTS.md")"
+          recovery_context="$(cat "${RUNNER_TEMP}/mira-worker/recovery-context.txt" 2>/dev/null || printf '%s\n' 'No Recovery context.')"
 
           cat > "${RUNNER_TEMP}/mira-worker/prompt.txt" <<PROMPT
           You are the implementation Worker for exactly one explicitly authorized Mira engineering work item.
@@ -528,6 +954,8 @@ jobs:
           - issue: #${ISSUE_NUMBER}
           - delivery base: ${BASE_BRANCH}
           - base SHA: ${BASE_SHA}
+
+          Advisory work budget: ${SOFT_BUDGET_MINUTES} minutes. This is a planning checkpoint, NOT a hard deadline. Do not stop, abandon, or discard useful work merely because this budget has elapsed. Continue when the task needs more time. If a handoff is necessary, leave a coherent implementation checkpoint and an exact account of remaining work. The GitHub-hosted runner's platform execution ceiling is external and cannot be extended by this workflow.
 
           Important execution constraints:
           - Work only on this Issue.
@@ -557,6 +985,9 @@ jobs:
 
           TRUSTED_MAINTAINER_FOLLOW_UP
           ${maintainer_amendments}
+
+          CANDIDATE_RECOVERY_CONTEXT
+          ${recovery_context}
           PROMPT
 
           opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-before.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-before.json"
@@ -710,7 +1141,7 @@ jobs:
 
       - name: Capture durable Candidate
         id: candidate
-        if: ${{ always() && steps.checkout.outcome == 'success' && steps.identity.outcome == 'success' && steps.worker.outcome != 'skipped' }}
+        if: ${{ always() && steps.recovery.outputs.run_worker == 'true' && steps.checkout.outcome == 'success' && steps.identity.outcome == 'success' && steps.worker.outcome != 'skipped' }}
         shell: bash
         env:
           PATH: /usr/bin:/bin
@@ -738,7 +1169,7 @@ jobs:
 
           candidate_dir="${root}/candidate"
           status_file="${root}/candidate-status.json"
-          artifact_name="mira-external-worker-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          artifact_name="mira-external-worker-candidate-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$root"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
 
@@ -760,31 +1191,8 @@ jobs:
           fi
 
           export CONTRACT_FINGERPRINT
-          CONTRACT_FINGERPRINT="$(python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
-          issue = json.loads((root / "issue.json").read_text())
-          comments = json.loads((root / "maintainer-comments.json").read_text())
-          payload = {
-              "fingerprint_version": "agt-057-transitional-v1",
-              "issue": {
-                  "number": issue.get("number"),
-                  "title": issue.get("title") or "",
-                  "body": issue.get("body") or "",
-              },
-              "trusted_maintainer_comments": comments,
-          }
-          encoded = json.dumps(
-              payload,
-              ensure_ascii=False,
-              separators=(",", ":"),
-              sort_keys=True,
-          ).encode("utf-8")
-          print("sha256:" + hashlib.sha256(encoded).hexdigest())
-          PY
-          )"
+          CONTRACT_FINGERPRINT="${{ steps.recovery.outputs.contract_fingerprint }}"
+          test -n "$CONTRACT_FINGERPRINT"
 
           rm -rf "$candidate_dir"
           set +e
@@ -887,16 +1295,203 @@ jobs:
 
       - name: Require a bounded implementation change
         id: bounded
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if git diff --quiet && test -z "$(git ls-files --others --exclude-standard)"; then
+          if git diff --quiet "$BASE_SHA" -- && test -z "$(git ls-files --others --exclude-standard)"; then
             echo "Worker produced no implementation changes." >&2
             exit 1
           fi
 
           git diff --check
+
+      - name: Re-publish verified Candidate for Delivery-only retry
+        id: recovered_candidate_upload
+        if: ${{ steps.recovery.outputs.mode == 'delivery_retry_only' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-candidate-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mira-worker/recovery/candidate/candidate.patch
+            ${{ runner.temp }}/mira-worker/recovery/candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Re-publish trusted Verify evidence for Delivery-only retry
+        id: recovered_verify_upload
+        if: ${{ steps.recovery.outputs.mode == 'delivery_retry_only' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-verify-recovered-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mira-worker/recovery/verify/verify-run.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/verification.log
+            ${{ runner.temp }}/mira-worker/recovery/verify/verification-meta.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/restore-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Resolve Candidate handoff
+        id: handoff
+        if: always()
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          CURRENT_BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          CURRENT_BASE_BRANCH: ${{ inputs.base_branch }}
+          CURRENT_WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          RECOVERY_SOURCE_RUN_ID: ${{ steps.recovery.outputs.source_run_id }}
+          CONTRACT_FINGERPRINT: ${{ steps.recovery.outputs.contract_fingerprint }}
+          AMBIGUITY_GUARD: ${{ steps.recovery.outputs.ambiguity_guard }}
+          NORMAL_CANDIDATE_NAME: ${{ steps.candidate.outputs.artifact_name }}
+          NORMAL_CANDIDATE_ID: ${{ steps.candidate_upload.outputs.artifact-id }}
+          NORMAL_CANDIDATE_DIGEST: ${{ steps.candidate_upload.outputs.artifact-digest }}
+          NORMAL_PATCH: ${{ steps.candidate.outputs.patch_sha256 }}
+          NORMAL_TREE: ${{ steps.candidate.outputs.tree_oid }}
+          NORMAL_PROVIDER: ${{ steps.provider.outputs.provider }}
+          NORMAL_MODEL: ${{ steps.provider.outputs.model }}
+          NORMAL_PROVIDER_PROFILE: ${{ steps.provider.outputs.provider_profile }}
+          NORMAL_PROVIDER_REGISTRY_REF: ${{ steps.provider.outputs.provider_registry_ref }}
+          NORMAL_MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
+          RECOVERED_CANDIDATE_ID: ${{ steps.recovered_candidate_upload.outputs.artifact-id }}
+          RECOVERED_CANDIDATE_DIGEST: ${{ steps.recovered_candidate_upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          mode="${RECOVERY_MODE:-fresh}"
+
+          normalize_artifact_digest() {
+            local digest="${1:-}"
+            if test -z "$digest"; then
+              printf '%s' ""
+            elif [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf '%s' "$digest"
+            elif [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              printf 'sha256:%s' "$digest"
+            else
+              echo "::error::Invalid Artifact digest format." >&2
+              return 2
+            fi
+          }
+
+          normal_candidate_digest="$(normalize_artifact_digest "${NORMAL_CANDIDATE_DIGEST:-}")"
+          recovered_candidate_digest="$(normalize_artifact_digest "${RECOVERED_CANDIDATE_DIGEST:-}")"
+
+          echo "recovery_mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "recovery_source_run_id=${RECOVERY_SOURCE_RUN_ID:-}" >> "$GITHUB_OUTPUT"
+          echo "contract_fingerprint=${CONTRACT_FINGERPRINT:-}" >> "$GITHUB_OUTPUT"
+          echo "ambiguity_guard=${AMBIGUITY_GUARD:-}" >> "$GITHUB_OUTPUT"
+
+          if test "$mode" = "delivery_complete"; then
+            pointer="$root/recovery/pointer.json"
+            test -s "$pointer"
+            {
+              echo "candidate_base_sha=$(jq -r '.base_sha' "$pointer")"
+              echo "candidate_origin_run_id=$(jq -r '.candidate_origin_run_id' "$pointer")"
+              echo "candidate_origin_run_attempt=$(jq -r '.candidate_origin_run_attempt' "$pointer")"
+              echo "candidate_base_branch=$(jq -r '.base_branch' "$pointer")"
+              echo "worker_branch=$(jq -r '.worker_branch' "$pointer")"
+              echo "pull_request_url=$(jq -r '.draft_pr_url' "$pointer")"
+              echo "candidate_artifact_name=$(jq -r '.candidate_artifact_name' "$pointer")"
+              echo "candidate_artifact_id=$(jq -r '.candidate_artifact_id' "$pointer")"
+              echo "candidate_artifact_digest=$(jq -r '.candidate_artifact_digest' "$pointer")"
+              echo "candidate_patch_sha256=$(jq -r '.candidate_patch_sha256' "$pointer")"
+              echo "candidate_tree_oid=$(jq -r '.candidate_tree_oid' "$pointer")"
+              echo "contract_fingerprint=$(jq -r '.contract_fingerprint' "$pointer")"
+              echo "ambiguity_guard=$(jq -r '.ambiguity_guard' "$pointer")"
+              echo "verification_artifact_name=$(jq -r '.verification_artifact_name' "$pointer")"
+              echo "verified_patch_sha256=$(jq -r '.candidate_patch_sha256' "$pointer")"
+              echo "verified_tree_oid=$(jq -r '.candidate_tree_oid' "$pointer")"
+              echo "verified_contract_fingerprint=$(jq -r '.contract_fingerprint' "$pointer")"
+              echo "provider=$(jq -r '.provider // ""' "$pointer")"
+              echo "provider_profile=$(jq -r '.provider_profile // ""' "$pointer")"
+              echo "provider_registry_ref=$(jq -r '.provider_registry_ref // ""' "$pointer")"
+              echo "model_route=$(jq -r '.model_route // ""' "$pointer")"
+              echo "model=$(jq -r '.model // ""' "$pointer")"
+            } >> "$GITHUB_OUTPUT"
+          elif test "$mode" = "delivery_retry_only"; then
+            manifest="$root/recovery/candidate/candidate.json"
+            verify_run="$root/recovery/verify/verify-run.json"
+            test -s "$manifest"
+            test -s "$verify_run"
+            candidate_base="$(jq -r '.base_sha' "$manifest")"
+            candidate_origin_run_id="$(jq -r '.run_id' "$manifest")"
+            candidate_origin_run_attempt="$(jq -r '.run_attempt' "$manifest")"
+            candidate_base_branch="$(jq -r '.base_branch' "$manifest")"
+            candidate_worker_branch="feat/worker-${ISSUE_NUMBER}-${candidate_origin_run_id}-${candidate_origin_run_attempt}"
+            patch="$(jq -r '.candidate_patch_sha256' "$manifest")"
+            tree="$(jq -r '.candidate_tree_oid' "$manifest")"
+            contract="$(jq -r '.contract_fingerprint' "$manifest")"
+            verify_status="$(jq -r '.terminal_status' "$verify_run")"
+            verify_patch="$(jq -r '.candidate_patch_sha256' "$verify_run")"
+            verify_tree="$(jq -r '.candidate_tree_oid' "$verify_run")"
+            test "$verify_status" = "success"
+            test "$patch" = "$verify_patch"
+            test "$tree" = "$verify_tree"
+
+            {
+              echo "candidate_base_sha=$candidate_base"
+              echo "candidate_origin_run_id=$candidate_origin_run_id"
+              echo "candidate_origin_run_attempt=$candidate_origin_run_attempt"
+              echo "candidate_base_branch=$candidate_base_branch"
+              echo "worker_branch=$candidate_worker_branch"
+              echo "candidate_artifact_name=mira-external-worker-candidate-${{ inputs.issue_number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              echo "candidate_artifact_id=${RECOVERED_CANDIDATE_ID:-}"
+              echo "candidate_artifact_digest=$recovered_candidate_digest"
+              echo "candidate_patch_sha256=$patch"
+              echo "candidate_tree_oid=$tree"
+              echo "contract_fingerprint=$contract"
+              echo "verification_artifact_name=mira-external-worker-verify-recovered-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              echo "verified_patch_sha256=$verify_patch"
+              echo "verified_tree_oid=$verify_tree"
+              echo "verified_contract_fingerprint=$contract"
+              provider="$(jq -r '.provider // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              provider_profile="$(jq -r '.provider_profile // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              provider_registry_ref="$(jq -r '.provider_registry_ref // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              model_route="$(jq -r '.model_route // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              model="$(jq -r '.model // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              if test -z "$model"; then
+                model="$(jq -r '.model // ""' "$manifest")"
+              fi
+              if test -z "$provider"; then
+                provider="$(jq -r '.provider // ""' "$manifest")"
+              fi
+              if test -z "$model_route"; then
+                model_route="$(jq -r 'if (.provider // "") != "" and (.model // "") != "" then (.provider + "/" + .model) else "" end' "$manifest")"
+              fi
+              echo "provider=$provider"
+              echo "provider_profile=$provider_profile"
+              echo "provider_registry_ref=$provider_registry_ref"
+              echo "model_route=$model_route"
+              echo "model=$model"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "pull_request_url="
+              echo "candidate_base_sha=${CURRENT_BASE_SHA:-}"
+              echo "candidate_origin_run_id=${GITHUB_RUN_ID}"
+              echo "candidate_origin_run_attempt=${GITHUB_RUN_ATTEMPT}"
+              echo "candidate_base_branch=${CURRENT_BASE_BRANCH:-}"
+              echo "worker_branch=${CURRENT_WORKER_BRANCH:-}"
+              echo "candidate_artifact_name=${NORMAL_CANDIDATE_NAME:-}"
+              echo "candidate_artifact_id=${NORMAL_CANDIDATE_ID:-}"
+              echo "candidate_artifact_digest=$normal_candidate_digest"
+              echo "candidate_patch_sha256=${NORMAL_PATCH:-}"
+              echo "candidate_tree_oid=${NORMAL_TREE:-}"
+              echo "verification_artifact_name="
+              echo "verified_patch_sha256="
+              echo "verified_tree_oid="
+              echo "verified_contract_fingerprint="
+              echo "provider=${NORMAL_PROVIDER:-}"
+              echo "provider_profile=${NORMAL_PROVIDER_PROFILE:-}"
+              echo "provider_registry_ref=${NORMAL_PROVIDER_REGISTRY_REF:-}"
+              echo "model_route=${NORMAL_MODEL_ROUTE:-}"
+              echo "model=${NORMAL_MODEL:-}"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Finalize Worker/Capture evidence
         id: worker_evidence
@@ -906,13 +1501,22 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
-          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          RUN_WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
+          CANDIDATE_BASE_SHA: ${{ steps.handoff.outputs.candidate_base_sha }}
+          WORKER_BRANCH: ${{ steps.handoff.outputs.worker_branch }}
+          CANDIDATE_ORIGIN_RUN_ID: ${{ steps.handoff.outputs.candidate_origin_run_id }}
+          CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
           FREE_MODE: ${{ inputs.free_mode }}
           REQUESTED_MODEL: ${{ inputs.model }}
           REQUESTED_PROVIDER_PROFILE: ${{ inputs.provider_profile }}
           REQUESTED_PROVIDER_REGISTRY_REF: ${{ inputs.provider_registry_ref }}
+          EFFECTIVE_PROVIDER: ${{ steps.handoff.outputs.provider }}
+          EFFECTIVE_PROVIDER_PROFILE: ${{ steps.handoff.outputs.provider_profile }}
+          EFFECTIVE_PROVIDER_REGISTRY_REF: ${{ steps.handoff.outputs.provider_registry_ref }}
+          EFFECTIVE_MODEL: ${{ steps.handoff.outputs.model }}
+          EFFECTIVE_MODEL_ROUTE: ${{ steps.handoff.outputs.model_route }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
@@ -923,10 +1527,19 @@ jobs:
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
           CANDIDATE_UPLOAD_OUTCOME: ${{ steps.candidate_upload.outcome }}
-          CANDIDATE_ARTIFACT_NAME: ${{ steps.candidate.outputs.artifact_name }}
-          CANDIDATE_ARTIFACT_ID: ${{ steps.candidate_upload.outputs.artifact-id }}
-          CANDIDATE_ARTIFACT_URL: ${{ steps.candidate_upload.outputs.artifact-url }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.candidate_upload.outputs.artifact-digest }}
+          RECOVERED_CANDIDATE_UPLOAD_OUTCOME: ${{ steps.recovered_candidate_upload.outcome }}
+          RECOVERED_VERIFY_UPLOAD_OUTCOME: ${{ steps.recovered_verify_upload.outcome }}
+          RECOVERY_MODE: ${{ steps.handoff.outputs.recovery_mode }}
+          RECOVERY_SOURCE_RUN_ID: ${{ steps.handoff.outputs.recovery_source_run_id }}
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+          RECOVERY_GATE_OUTCOME: ${{ steps.recovery_gate.outcome }}
+          CANDIDATE_ARTIFACT_NAME: ${{ steps.handoff.outputs.candidate_artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ steps.handoff.outputs.candidate_artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.handoff.outputs.candidate_artifact_digest }}
+          CANDIDATE_PATCH_SHA256: ${{ steps.handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ steps.handoff.outputs.candidate_tree_oid }}
+          CONTRACT_FINGERPRINT: ${{ steps.handoff.outputs.contract_fingerprint }}
+          AMBIGUITY_GUARD: ${{ steps.handoff.outputs.ambiguity_guard }}
           BOUNDED_OUTCOME: ${{ steps.bounded.outcome }}
         run: |
           set -euo pipefail
@@ -941,6 +1554,15 @@ jobs:
             fi
           fi
 
+          candidate_upload_outcome="${CANDIDATE_UPLOAD_OUTCOME:-}"
+          verify_evidence_republish_outcome="skipped"
+          if test "${RECOVERY_MODE:-}" = "delivery_retry_only"; then
+            candidate_upload_outcome="${RECOVERED_CANDIDATE_UPLOAD_OUTCOME:-}"
+            verify_evidence_republish_outcome="${RECOVERED_VERIFY_UPLOAD_OUTCOME:-}"
+          fi
+          export CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE="$candidate_upload_outcome"
+          export VERIFY_EVIDENCE_REPUBLISH_OUTCOME="$verify_evidence_republish_outcome"
+
           export TERMINAL_STATUS FAILURE_STAGE
           read -r TERMINAL_STATUS FAILURE_STAGE < <(python3 - <<'PY'
           import os
@@ -948,13 +1570,16 @@ jobs:
               ("validate", os.getenv("VALIDATE_OUTCOME")),
               ("checkout", os.getenv("CHECKOUT_OUTCOME")),
               ("identity", os.getenv("IDENTITY_OUTCOME")),
+              ("recovery", os.getenv("RECOVERY_OUTCOME")),
+              ("recovery_gate", os.getenv("RECOVERY_GATE_OUTCOME")),
               ("provider", os.getenv("PROVIDER_OUTCOME")),
               ("policy", os.getenv("POLICY_OUTCOME")),
               ("install", os.getenv("INSTALL_OUTCOME")),
               ("version", os.getenv("VERSION_OUTCOME")),
               ("worker", os.getenv("WORKER_OUTCOME")),
               ("candidate_capture", os.getenv("CANDIDATE_OUTCOME")),
-              ("candidate_upload", os.getenv("CANDIDATE_UPLOAD_OUTCOME")),
+              ("candidate_upload", os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE")),
+              ("verify_evidence_republish", os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME")),
               ("bounded_change", os.getenv("BOUNDED_OUTCOME")),
           ]
           failed = next((name for name, outcome in stages if outcome == "failure"), "")
@@ -989,14 +1614,47 @@ jobs:
               except Exception:
                   candidate = {"state": "capture_failed", "recoverable": False, "reason": "invalid_candidate_status"}
 
+          recovery = {
+              "mode": os.getenv("RECOVERY_MODE") or "fresh",
+              "source_run_id": os.getenv("RECOVERY_SOURCE_RUN_ID") or None,
+          }
+          rp = root / "recovery-state.json"
+          if rp.exists():
+              try:
+                  loaded_recovery = json.loads(rp.read_text())
+                  if isinstance(loaded_recovery, dict):
+                      recovery.update(loaded_recovery)
+              except Exception:
+                  recovery["reason"] = "invalid_recovery_state"
+
           candidate["capture_outcome"] = os.getenv("CANDIDATE_OUTCOME")
-          candidate["upload_outcome"] = os.getenv("CANDIDATE_UPLOAD_OUTCOME")
+          candidate["upload_outcome"] = os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE")
+          candidate["verification_evidence_republish_outcome"] = os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME")
           candidate["artifact_name"] = os.getenv("CANDIDATE_ARTIFACT_NAME") or None
           candidate["artifact_id"] = os.getenv("CANDIDATE_ARTIFACT_ID") or None
-          candidate["artifact_url"] = os.getenv("CANDIDATE_ARTIFACT_URL") or None
           candidate["artifact_digest"] = os.getenv("CANDIDATE_ARTIFACT_DIGEST") or None
+          candidate["candidate_patch_sha256"] = os.getenv("CANDIDATE_PATCH_SHA256") or None
+          candidate["candidate_tree_oid"] = os.getenv("CANDIDATE_TREE_OID") or None
+          candidate["contract_fingerprint"] = os.getenv("CONTRACT_FINGERPRINT") or None
+          candidate["ambiguity_guard"] = os.getenv("AMBIGUITY_GUARD") or None
           candidate["artifact_retention_days"] = 14
-          if candidate.get("state") == "captured":
+          if recovery.get("mode") == "delivery_complete":
+              candidate["state"] = "captured"
+              candidate["recoverable"] = False
+              candidate["reason"] = "prior_candidate_already_delivered"
+          if recovery.get("mode") == "delivery_retry_only":
+              if (
+                  os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE") == "success"
+                  and os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME") == "success"
+              ):
+                  candidate["state"] = "captured"
+                  candidate["recoverable"] = True
+                  candidate["reason"] = "verified_candidate_republished_for_delivery_retry"
+              else:
+                  candidate["state"] = "upload_failed"
+                  candidate["recoverable"] = False
+                  candidate["reason"] = "recovery_artifact_republication_failed"
+          if candidate.get("state") == "captured" and recovery.get("mode") not in {"delivery_retry_only", "delivery_complete"}:
               if os.getenv("CANDIDATE_UPLOAD_OUTCOME") == "success":
                   candidate["recoverable"] = True
                   candidate["reason"] = None
@@ -1014,17 +1672,21 @@ jobs:
               "issue_number": int(os.getenv("ISSUE_NUMBER")) if os.getenv("ISSUE_NUMBER") else None,
               "base_branch": os.getenv("BASE_BRANCH"),
               "base_sha": os.getenv("BASE_SHA") or identity.get("base_sha"),
+              "run_worker_branch": os.getenv("RUN_WORKER_BRANCH") or identity.get("worker_branch"),
+              "candidate_base_sha": os.getenv("CANDIDATE_BASE_SHA") or os.getenv("BASE_SHA") or identity.get("base_sha"),
               "worker_branch": os.getenv("WORKER_BRANCH") or identity.get("worker_branch"),
+              "candidate_origin_run_id": os.getenv("CANDIDATE_ORIGIN_RUN_ID") or identity.get("run_id"),
+              "candidate_origin_run_attempt": os.getenv("CANDIDATE_ORIGIN_RUN_ATTEMPT") or identity.get("run_attempt"),
               "requested_provider": os.getenv("REQUESTED_PROVIDER") or "opencode-go",
               "requested_provider_profile": os.getenv("REQUESTED_PROVIDER_PROFILE") or None,
               "requested_provider_registry_ref": os.getenv("REQUESTED_PROVIDER_REGISTRY_REF") or None,
               "requested_model": os.getenv("REQUESTED_MODEL") or "deepseek-v4.1-flash",
-              "provider": identity.get("provider"),
-              "provider_profile": identity.get("provider_profile") or None,
-              "provider_registry_ref": identity.get("provider_registry_ref"),
+              "provider": os.getenv("EFFECTIVE_PROVIDER") or identity.get("provider"),
+              "provider_profile": os.getenv("EFFECTIVE_PROVIDER_PROFILE") or identity.get("provider_profile") or None,
+              "provider_registry_ref": os.getenv("EFFECTIVE_PROVIDER_REGISTRY_REF") or identity.get("provider_registry_ref"),
               "provider_registry_sha": identity.get("provider_registry_sha"),
-              "model": identity.get("model"),
-              "model_route": identity.get("model_route"),
+              "model": os.getenv("EFFECTIVE_MODEL") or identity.get("model"),
+              "model_route": os.getenv("EFFECTIVE_MODEL_ROUTE") or identity.get("model_route"),
               "skill_commit": identity.get("skill_commit"),
               "started_at": identity.get("run_started_at"),
               "ended_at": os.getenv("RUN_ENDED_AT"),
@@ -1040,16 +1702,18 @@ jobs:
                   "version": os.getenv("VERSION_OUTCOME"),
                   "worker": os.getenv("WORKER_OUTCOME"),
                   "candidate_capture": os.getenv("CANDIDATE_OUTCOME"),
-                  "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME"),
+                  "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE"),
+                  "verify_evidence_republish": os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME"),
                   "bounded_change": os.getenv("BOUNDED_OUTCOME"),
               },
+              "recovery": recovery,
               "candidate": candidate,
               "verification": {"command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000], "outcome": "pending_clean_room_verify"},
               "delivery": {"outcome": "pending_verified_candidate"},
               "artifact_retention_days": 14,
               "safety": {
-                  "github_permissions": {"contents": "read", "issues": "read", "pull_requests": "none"},
-                  "provider_credentials_present": os.getenv("FREE_MODE") != "true",
+                  "github_permissions": {"actions": "read", "contents": "read", "issues": "read", "pull_requests": "none"},
+                  "provider_credentials_present": os.getenv("FREE_MODE") != "true" and os.getenv("WORKER_OUTCOME") not in {None, "", "skipped"},
                   "github_write_authority": False,
                   "raw_environment_persisted": False,
                   "provider_credentials_persisted": False,
@@ -1071,6 +1735,11 @@ jobs:
             ${{ runner.temp }}/mira-worker/issue.json
             ${{ runner.temp }}/mira-worker/maintainer-comments.json
             ${{ runner.temp }}/mira-worker/provider-route.json
+            ${{ runner.temp }}/mira-worker/contract.json
+            ${{ runner.temp }}/mira-worker/recovery-state.json
+            ${{ runner.temp }}/mira-worker/recovery-context.txt
+            ${{ runner.temp }}/mira-worker/recovery/discovery.json
+            ${{ runner.temp }}/mira-worker/recovery/pointer.json
             ${{ runner.temp }}/mira-worker/trajectory.jsonl
             ${{ runner.temp }}/mira-worker/session-summary.json
             ${{ runner.temp }}/mira-worker/worker-output.txt
@@ -1086,6 +1755,7 @@ jobs:
 
   verify:
     needs: worker_capture
+    if: ${{ needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' }}
     permissions:
       contents: read
       issues: none
@@ -1096,13 +1766,14 @@ jobs:
       candidate_tree_oid: ${{ steps.restore.outputs.tree_oid }}
       contract_fingerprint: ${{ steps.restore.outputs.contract_fingerprint }}
       verification_artifact_name: ${{ steps.verify_meta.outputs.artifact_name }}
+      terminal_status: ${{ steps.verify_meta.outputs.terminal_status }}
 
     steps:
       - name: Checkout exact Candidate base
         id: checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.worker_capture.outputs.base_sha }}
+          ref: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -1139,7 +1810,7 @@ jobs:
         env:
           EXPECTED_REPOSITORY: ${{ github.repository }}
           EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
-          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
           EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
@@ -1221,7 +1892,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
           EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
@@ -1240,6 +1911,7 @@ jobs:
           import json, os
           from pathlib import Path
           ok = os.getenv("RESTORE_OUTCOME") == "success" and os.getenv("DIFF_CHECK_OUTCOME") == "success" and os.getenv("VERIFY_OUTCOME") == "success"
+          print("terminal_status=" + ("success" if ok else "failure"), file=open(os.environ["GITHUB_OUTPUT"], "a"))
           payload = {
               "schema_version": 1,
               "job_role": "verify",
@@ -1257,7 +1929,7 @@ jobs:
               },
               "terminal_status": "success" if ok else "failure",
               "verification_artifact": os.getenv("ARTIFACT_NAME"),
-              "github_permissions": {"actions": "read", "contents": "read", "issues": "none", "pull_requests": "none"},
+              "github_permissions": {"actions": "none", "contents": "read", "issues": "none", "pull_requests": "none"},
               "provider_credentials_present": False,
               "github_mutation_authority": False,
           }
@@ -1295,6 +1967,7 @@ jobs:
     needs:
       - worker_capture
       - verify
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && ((needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only') || needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only') }}
     permissions:
       contents: write
       issues: none
@@ -1302,13 +1975,52 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pull_request_url: ${{ steps.pr.outputs.url }}
+      delivery_artifact_name: ${{ steps.delivery_evidence.outputs.artifact_name }}
+      terminal_status: ${{ steps.delivery_evidence.outputs.terminal_status }}
 
     steps:
+      - name: Resolve verified Delivery handoff
+        id: verified_handoff
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
+          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
+          NORMAL_PATCH: ${{ needs.verify.outputs.candidate_patch_sha256 }}
+          NORMAL_TREE: ${{ needs.verify.outputs.candidate_tree_oid }}
+          NORMAL_CONTRACT: ${{ needs.verify.outputs.contract_fingerprint }}
+          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          RECOVERED_PATCH: ${{ needs.worker_capture.outputs.verified_patch_sha256 }}
+          RECOVERED_TREE: ${{ needs.worker_capture.outputs.verified_tree_oid }}
+          RECOVERED_CONTRACT: ${{ needs.worker_capture.outputs.verified_contract_fingerprint }}
+        run: |
+          set -euo pipefail
+          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
+            artifact="$RECOVERED_VERIFY_ARTIFACT"
+            patch="$RECOVERED_PATCH"
+            tree="$RECOVERED_TREE"
+            contract="$RECOVERED_CONTRACT"
+          else
+            artifact="$NORMAL_VERIFY_ARTIFACT"
+            patch="$NORMAL_PATCH"
+            tree="$NORMAL_TREE"
+            contract="$NORMAL_CONTRACT"
+          fi
+          test -n "$artifact"
+          test -n "$patch"
+          test -n "$tree"
+          test -n "$contract"
+          {
+            echo "verification_artifact_name=$artifact"
+            echo "candidate_patch_sha256=$patch"
+            echo "candidate_tree_oid=$tree"
+            echo "contract_fingerprint=$contract"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout exact verified Candidate base
         id: checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.worker_capture.outputs.base_sha }}
+          ref: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -1330,7 +2042,7 @@ jobs:
         id: verify_handoff
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.verify.outputs.verification_artifact_name }}
+          name: ${{ steps.verified_handoff.outputs.verification_artifact_name }}
           path: ${{ runner.temp }}/mira-delivery/verify
 
       - name: Load trusted Candidate restore primitive
@@ -1350,7 +2062,7 @@ jobs:
         env:
           EXPECTED_REPOSITORY: ${{ github.repository }}
           EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
-          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
         run: |
@@ -1373,9 +2085,9 @@ jobs:
         env:
           WORKER_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
           WORKER_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
-          VERIFY_PATCH_SHA256: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          VERIFY_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
-          VERIFY_CONTRACT_FINGERPRINT: ${{ needs.verify.outputs.contract_fingerprint }}
+          VERIFY_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          VERIFY_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
+          VERIFY_CONTRACT_FINGERPRINT: ${{ steps.verified_handoff.outputs.contract_fingerprint }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
         run: |
           set -euo pipefail
@@ -1407,28 +2119,49 @@ jobs:
             echo "tree_oid=$manifest_tree"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push exact verified Candidate
+      - name: Load trusted idempotent Delivery primitive
+        id: delivery_tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          mkdir -p "$root"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/043f21fbe3f57d63cc388390a35d813d912c7c1c/.github/scripts/worker-candidate/delivery.py" \
+            -o "$root/trusted-delivery.py"
+          test -s "$root/trusted-delivery.py"
+
+      - name: Commit/push or reuse exact verified Candidate branch
         id: commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
-          EXPECTED_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+          EXPECTED_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
           set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
           git config user.name "mira-agent-worker[bot]"
           git config user.email "mira-agent-worker[bot]@users.noreply.github.com"
-          git commit -m "agent: implement issue #${ISSUE_NUMBER}"
-
-          commit_tree_oid="$(git rev-parse HEAD^{tree})"
-          test "$commit_tree_oid" = "$EXPECTED_TREE_OID"
-
           gh auth setup-git
-          git push --set-upstream origin "HEAD:${WORKER_BRANCH}"
 
-          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "commit_tree_oid=$commit_tree_oid" >> "$GITHUB_OUTPUT"
+          python3 "$root/trusted-delivery.py" ensure-branch \
+            --repo "$GITHUB_WORKSPACE" \
+            --branch "$WORKER_BRANCH" \
+            --base-sha "$EXPECTED_BASE_SHA" \
+            --tree-oid "$EXPECTED_TREE_OID" \
+            --commit-message "agent: implement issue #${ISSUE_NUMBER}" \
+            > "$root/delivery-branch.json"
+
+          commit_sha="$(jq -r '.commit_sha' "$root/delivery-branch.json")"
+          commit_tree_oid="$(jq -r '.commit_tree_oid' "$root/delivery-branch.json")"
+          test "$commit_tree_oid" = "$EXPECTED_TREE_OID"
+          {
+            echo "commit_sha=$commit_sha"
+            echo "commit_tree_oid=$commit_tree_oid"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create Draft PR with durable handoff
         id: pr
@@ -1437,7 +2170,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
-          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
           PROVIDER: ${{ needs.worker_capture.outputs.provider }}
           PROVIDER_PROFILE: ${{ needs.worker_capture.outputs.provider_profile }}
@@ -1445,8 +2178,8 @@ jobs:
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
-          CANDIDATE_PATCH_SHA256: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          CANDIDATE_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          CANDIDATE_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-delivery"
@@ -1458,8 +2191,10 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["RUNNER_TEMP"]) / "mira-delivery"
-          worker_output = (root / "worker" / "worker-output.txt").read_text(errors="replace")[:12000]
-          verification_output = (root / "verify" / "verification.log").read_text(errors="replace")[:12000]
+          worker_path = root / "worker" / "worker-output.txt"
+          verify_path = root / "verify" / "verification.log"
+          worker_output = worker_path.read_text(errors="replace")[:12000] if worker_path.exists() else "(Delivery-only retry: model was not rerun.)"
+          verification_output = verify_path.read_text(errors="replace")[:12000] if verify_path.exists() else "(Prior trusted Verify evidence reused.)"
 
           body = f"""## Mira external Worker handoff
 
@@ -1498,13 +2233,15 @@ jobs:
           (root / "pr-body.md").write_text(body)
           PY
 
-          pr_url="$(gh pr create \
-            --draft \
+          python3 "$root/trusted-delivery.py" ensure-pr \
+            --branch "$WORKER_BRANCH" \
+            --head-owner "$GITHUB_REPOSITORY_OWNER" \
             --base "$BASE_BRANCH" \
-            --head "$WORKER_BRANCH" \
+            --head-sha "${{ steps.commit.outputs.commit_sha }}" \
             --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}" \
-            --body-file "$root/pr-body.md")"
-
+            --body-file "$root/pr-body.md" \
+            > "$root/pr-resolution.json"
+          pr_url="$(jq -r '.url' "$root/pr-resolution.json")"
           test -n "$pr_url"
           echo "url=$pr_url" >> "$GITHUB_OUTPUT"
 
@@ -1516,7 +2253,7 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
-          EXPECTED_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          EXPECTED_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
         run: |
           set -euo pipefail
@@ -1533,10 +2270,10 @@ jobs:
         if: always()
         shell: bash
         env:
-          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
-          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
-          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          CANDIDATE_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
@@ -1564,6 +2301,7 @@ jobs:
           }
           failed = next((k for k, v in stages.items() if v == "failure"), None)
           ok = not failed and all(v in {"success", "skipped"} for v in stages.values())
+          print("terminal_status=" + ("success" if ok else "failure"), file=open(os.environ["GITHUB_OUTPUT"], "a"))
           payload = {
               "schema_version": 1,
               "job_role": "delivery",
@@ -1604,3 +2342,150 @@ jobs:
             ${{ runner.temp }}/mira-delivery/restore-result.json
           if-no-files-found: warn
           retention-days: 14
+
+
+  recovery_index:
+    needs:
+      - worker_capture
+      - verify
+      - delivery
+    if: ${{ always() && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' && (needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' || (needs.worker_capture.outputs.recovered_candidate_upload_outcome == 'success' && needs.worker_capture.outputs.recovered_verify_upload_outcome == 'success')) }}
+    permissions:
+      contents: none
+      issues: write
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Publish durable Recovery pointer to owning Issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
+          RECOVERY_SOURCE_RUN_ID: ${{ needs.worker_capture.outputs.recovery_source_run_id }}
+          BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+          BASE_BRANCH: ${{ needs.worker_capture.outputs.candidate_base_branch }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          CANDIDATE_ORIGIN_RUN_ID: ${{ needs.worker_capture.outputs.candidate_origin_run_id }}
+          CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ needs.worker_capture.outputs.candidate_origin_run_attempt }}
+          CANDIDATE_ARTIFACT_NAME: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
+          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          AMBIGUITY_GUARD: ${{ needs.worker_capture.outputs.ambiguity_guard }}
+          PROVIDER: ${{ needs.worker_capture.outputs.provider }}
+          PROVIDER_PROFILE: ${{ needs.worker_capture.outputs.provider_profile }}
+          PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
+          MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
+          MODEL: ${{ needs.worker_capture.outputs.model }}
+          NORMAL_VERIFY_RESULT: ${{ needs.verify.outputs.terminal_status }}
+          NORMAL_VERIFY_JOB_RESULT: ${{ needs.verify.result }}
+          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
+          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          DELIVERY_RESULT: ${{ needs.delivery.outputs.terminal_status }}
+          DELIVERY_JOB_RESULT: ${{ needs.delivery.result }}
+          DELIVERY_ARTIFACT: ${{ needs.delivery.outputs.delivery_artifact_name }}
+          DRAFT_PR_URL: ${{ needs.delivery.outputs.pull_request_url }}
+        run: |
+          set -euo pipefail
+
+          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
+            verify_state="success"
+            verify_artifact="$RECOVERED_VERIFY_ARTIFACT"
+          else
+            if test "${NORMAL_VERIFY_RESULT:-}" = "success" || test "${NORMAL_VERIFY_RESULT:-}" = "failure"; then
+              verify_state="$NORMAL_VERIFY_RESULT"
+            elif test "$NORMAL_VERIFY_JOB_RESULT" = "skipped"; then
+              verify_state="skipped"
+            else
+              verify_state="failure"
+            fi
+            verify_artifact="${NORMAL_VERIFY_ARTIFACT:-}"
+          fi
+
+          if test "${DELIVERY_RESULT:-}" = "success" || test "${DELIVERY_RESULT:-}" = "failure"; then
+            delivery_state="$DELIVERY_RESULT"
+          elif test "$DELIVERY_JOB_RESULT" = "skipped"; then
+            delivery_state="skipped"
+          else
+            delivery_state="failure"
+          fi
+
+          export POINTER_JSON
+          POINTER_JSON="$(jq -cn \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson issue "$ISSUE_NUMBER" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg recovery_mode "$RECOVERY_MODE" \
+            --arg recovery_source_run_id "$RECOVERY_SOURCE_RUN_ID" \
+            --arg base_sha "$BASE_SHA" \
+            --arg base_branch "$BASE_BRANCH" \
+            --arg worker_branch "$WORKER_BRANCH" \
+            --arg candidate_origin_run_id "$CANDIDATE_ORIGIN_RUN_ID" \
+            --arg candidate_origin_run_attempt "$CANDIDATE_ORIGIN_RUN_ATTEMPT" \
+            --arg candidate_artifact_name "$CANDIDATE_ARTIFACT_NAME" \
+            --arg candidate_artifact_id "$CANDIDATE_ARTIFACT_ID" \
+            --arg candidate_artifact_digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --arg candidate_patch_sha256 "$CANDIDATE_PATCH_SHA256" \
+            --arg candidate_tree_oid "$CANDIDATE_TREE_OID" \
+            --arg contract_fingerprint "$CONTRACT_FINGERPRINT" \
+            --arg ambiguity_guard "$AMBIGUITY_GUARD" \
+            --arg provider "$PROVIDER" \
+            --arg provider_profile "$PROVIDER_PROFILE" \
+            --arg provider_registry_ref "$PROVIDER_REGISTRY_REF" \
+            --arg model_route "$MODEL_ROUTE" \
+            --arg model "$MODEL" \
+            --arg verification_state "$verify_state" \
+            --arg verification_artifact_name "$verify_artifact" \
+            --arg delivery_state "$delivery_state" \
+            --arg delivery_artifact_name "$DELIVERY_ARTIFACT" \
+            --arg draft_pr_url "$DRAFT_PR_URL" \
+            '{
+              schema_version: 1,
+              repository: $repository,
+              issue_number: $issue,
+              run_id: ($run_id | tonumber),
+              run_attempt: ($run_attempt | tonumber),
+              recovery_mode: $recovery_mode,
+              recovery_source_run_id: (if $recovery_source_run_id == "" then null else ($recovery_source_run_id | tonumber) end),
+              base_sha: $base_sha,
+              base_branch: $base_branch,
+              worker_branch: $worker_branch,
+              candidate_origin_run_id: ($candidate_origin_run_id | tonumber),
+              candidate_origin_run_attempt: ($candidate_origin_run_attempt | tonumber),
+              candidate_artifact_name: $candidate_artifact_name,
+              candidate_artifact_id: $candidate_artifact_id,
+              candidate_artifact_digest: $candidate_artifact_digest,
+              candidate_patch_sha256: $candidate_patch_sha256,
+              candidate_tree_oid: $candidate_tree_oid,
+              contract_fingerprint: $contract_fingerprint,
+              ambiguity_guard: $ambiguity_guard,
+              provider: $provider,
+              provider_profile: $provider_profile,
+              provider_registry_ref: $provider_registry_ref,
+              model_route: $model_route,
+              model: $model,
+              verification_state: $verification_state,
+              verification_artifact_name: $verification_artifact_name,
+              delivery_state: $delivery_state,
+              delivery_artifact_name: $delivery_artifact_name,
+              draft_pr_url: $draft_pr_url
+            }')"
+
+          body="$(cat <<EOF
+          <!-- mira-recovery-candidate:v1
+          $POINTER_JSON
+          -->
+          Mira Worker Recovery pointer · run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT · Candidate `$CANDIDATE_TREE_OID` · Verify $verify_state · Delivery $delivery_state.
+          EOF
+          )"
+
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --method POST \
+            -f body="$body" \
+            >/dev/null
