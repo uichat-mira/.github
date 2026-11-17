@@ -63,12 +63,13 @@ def ensure_branch(args: argparse.Namespace) -> int:
         git(repo, "fetch", "--no-tags", args.remote, f"refs/heads/{args.branch}:{remote_ref}")
         existing = git(repo, "rev-parse", f"{remote_ref}^{{commit}}")
         existing_tree = git(repo, "rev-parse", f"{existing}^{{tree}}")
-        try:
-            existing_parent = git(repo, "rev-parse", f"{existing}^")
-        except DeliveryError as exc:
-            raise DeliveryError("existing Candidate branch has no expected base parent") from exc
-        if existing_tree != args.tree_oid or existing_parent != args.base_sha:
-            raise DeliveryError("existing remote Candidate branch does not match exact base/tree identity")
+        existing_parents = git(repo, "rev-list", "--parents", "-n", "1", existing).split()
+        if (
+            len(existing_parents) != 2
+            or existing_parents[1] != args.base_sha
+            or existing_tree != args.tree_oid
+        ):
+            raise DeliveryError("existing remote Candidate branch does not match exact single-parent base/tree identity")
         git(repo, "reset", "--hard", existing)
         result = {
             "commit_sha": existing,
@@ -101,10 +102,12 @@ def ensure_branch(args: argparse.Namespace) -> int:
 def ensure_pr(args: argparse.Namespace) -> int:
     if not OID_RE.fullmatch(args.head_sha):
         raise DeliveryError("expected PR head SHA must be a full Git object ID")
+    if not re.fullmatch(r"[A-Za-z0-9-]+", args.head_owner):
+        raise DeliveryError("PR head owner is invalid")
     listed = command([
         "gh", "pr", "list",
         "--state", "all",
-        "--head", args.branch,
+        "--head", f"{args.head_owner}:{args.branch}",
         "--json", "url,state,isDraft,headRefOid,baseRefName",
     ])
     raw = require_success(listed, "gh pr list")
@@ -160,6 +163,7 @@ def parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser("ensure-pr")
     pr.add_argument("--branch", required=True)
+    pr.add_argument("--head-owner", required=True)
     pr.add_argument("--base", required=True)
     pr.add_argument("--head-sha", required=True)
     pr.add_argument("--title", required=True)
