@@ -209,6 +209,7 @@ else:
         second_pr = run([
             sys.executable, str(DELIVERY), "ensure-pr",
             "--branch", branch,
+            "--head-owner", "uichat-mira",
             "--base", "main",
             "--head-sha", first_commit,
             "--title", "agent: #73 fixture",
@@ -232,6 +233,7 @@ else:
         bad = run([
             sys.executable, str(DELIVERY), "ensure-pr",
             "--branch", branch,
+            "--head-owner", "uichat-mira",
             "--base", "main",
             "--head-sha", first_commit,
             "--title", "agent: #73 fixture",
