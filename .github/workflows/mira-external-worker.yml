@@ -779,6 +779,7 @@ jobs:
             end
           ' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
           org_policy="$(cat "${RUNNER_TEMP}/mira-worker/org-AGENTS.md")"
+          recovery_context="$(cat "${RUNNER_TEMP}/mira-worker/recovery-context.txt" 2>/dev/null || printf '%s\n' 'No Recovery context.')"
 
           cat > "${RUNNER_TEMP}/mira-worker/prompt.txt" <<PROMPT
           You are the implementation Worker for exactly one explicitly authorized Mira engineering work item.
@@ -825,6 +826,9 @@ jobs:
 
           TRUSTED_MAINTAINER_FOLLOW_UP
           ${maintainer_amendments}
+
+          CANDIDATE_RECOVERY_CONTEXT
+          ${recovery_context}
           PROMPT
 
           opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-before.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-before.json"
@@ -1006,7 +1010,7 @@ jobs:
 
           candidate_dir="${root}/candidate"
           status_file="${root}/candidate-status.json"
-          artifact_name="mira-external-worker-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          artifact_name="mira-external-worker-candidate-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$root"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
 
@@ -1028,31 +1032,8 @@ jobs:
           fi
 
           export CONTRACT_FINGERPRINT
-          CONTRACT_FINGERPRINT="$(python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
-          issue = json.loads((root / "issue.json").read_text())
-          comments = json.loads((root / "maintainer-comments.json").read_text())
-          payload = {
-              "fingerprint_version": "agt-057-transitional-v1",
-              "issue": {
-                  "number": issue.get("number"),
-                  "title": issue.get("title") or "",
-                  "body": issue.get("body") or "",
-              },
-              "trusted_maintainer_comments": comments,
-          }
-          encoded = json.dumps(
-              payload,
-              ensure_ascii=False,
-              separators=(",", ":"),
-              sort_keys=True,
-          ).encode("utf-8")
-          print("sha256:" + hashlib.sha256(encoded).hexdigest())
-          PY
-          )"
+          CONTRACT_FINGERPRINT="${{ steps.recovery.outputs.contract_fingerprint }}"
+          test -n "$CONTRACT_FINGERPRINT"
 
           rm -rf "$candidate_dir"
           set +e
