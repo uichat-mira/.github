@@ -857,10 +857,9 @@ jobs:
               exit 1
             fi
 
-            export OPENCODE_AUTH_CONTENT
-            # $provider and $key below are jq variables, not shell variables.
-            # shellcheck disable=SC2016
-            OPENCODE_AUTH_CONTENT="$(jq -cn --arg provider "$PROVIDER" --arg key "$provider_key" '{($provider):{"type":"api","key":$key}}')"
+            # V2 native provider credential discovery uses provider.env. Do not
+            # serialize the secret into config, CLI arguments, or artifacts.
+            export MIRA_WORKER_PROVIDER_KEY="$provider_key"
             unset OPENCODE_GO_API_KEY PROVIDER_API_KEY provider_key
           fi
 
@@ -869,7 +868,7 @@ jobs:
           # Do not hand-edit registry profiles or duplicate provider truth.
           export OPENCODE_CONFIG_CONTENT
           OPENCODE_CONFIG_CONTENT="$(
-            jq -cn --slurpfile route "$route" --argjson free "$FREE_MODE" '
+            jq -cn --slurpfile route "$route" --argjson free "$FREE_MODE" --arg provider "$PROVIDER" '
               {
                 share: "disabled",
                 update: "disable",
@@ -889,19 +888,31 @@ jobs:
                   {action:"execute",resource:"*",effect:"deny"}
                 ]
               }
-              + (if $free or (($route[0].provider_config // {}) | length) == 0 then {}
-                 else {
+              + (if $free then {}
+                 elif $provider == "opencode-go" then {
+                   providers: {
+                     "opencode-go": {
+                       name: "OpenCode Go",
+                       package: "@opencode/ai/providers/openai-compatible",
+                       env: ["MIRA_WORKER_PROVIDER_KEY"],
+                       settings: {baseURL: "https://opencode.ai/inference/go/openai/v1"},
+                       models: {($route[0].model): {}}
+                     }
+                   }
+                 }
+                 elif (($route[0].provider_config // {}) | length) != 0 then {
                    providers: (
                      $route[0].provider_config
                      | with_entries(.value |= {
                        name: (.name // null),
                        package: ("aisdk:" + .npm),
+                       env: ["MIRA_WORKER_PROVIDER_KEY"],
                        settings: (.options // {}),
                        models: (.models // {})
                      })
                    )
                  }
-                 end)
+                 else {} end)
             '
           )"
 
