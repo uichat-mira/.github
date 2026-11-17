@@ -102,8 +102,8 @@ jobs:
           assert "delivery_retry_only" in delivery
           assert "Resolve verified Delivery handoff" in delivery
           assert "Commit/push or reuse exact verified Candidate branch" in delivery
-          assert "trusted-delivery.py ensure-branch" in delivery
-          assert "trusted-delivery.py ensure-pr" in delivery
+          assert 'python3 "$root/trusted-delivery.py" ensure-branch' in delivery
+          assert 'python3 "$root/trusted-delivery.py" ensure-pr' in delivery
           boundary_start = delivery.index("Verify Draft PR and exact Candidate delivery boundary")
           boundary = delivery[boundary_start:]
           assert "needs.verify.outputs.candidate_tree_oid" not in boundary
