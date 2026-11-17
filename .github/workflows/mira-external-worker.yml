@@ -1049,7 +1049,7 @@ jobs:
               "artifact_retention_days": 14,
               "safety": {
                   "github_permissions": {"contents": "read", "issues": "read", "pull_requests": "none"},
-                  "provider_credentials_present": True,
+                  "provider_credentials_present": os.getenv("FREE_MODE") != "true",
                   "github_write_authority": False,
                   "raw_environment_persisted": False,
                   "provider_credentials_persisted": False,
