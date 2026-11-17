@@ -82,7 +82,7 @@ jobs:
           assert "Report already delivered Candidate" in worker
           assert "Capture durable Candidate" in worker
           assert "Run trusted repository verification" not in worker
-          assert "Commit and push exact verified Candidate" not in worker
+          assert "Commit/push or reuse exact verified Candidate branch" not in worker
 
           assert "needs: worker_capture" in verify
           assert "contents: read" in verify
@@ -121,12 +121,12 @@ jobs:
           assert "provider_api_key" not in delivery
           assert "Download Verify evidence" in delivery
           assert "Assert verified Candidate identity" in delivery
-          assert "Commit and push exact verified Candidate" in delivery
+          assert "Commit/push or reuse exact verified Candidate branch" in delivery
           assert "Create Draft PR with durable handoff" in delivery
           assert "Verify Draft PR and exact Candidate delivery boundary" in delivery
 
-          assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit and push exact verified Candidate")
-          assert delivery.index("Commit and push exact verified Candidate") < delivery.index("Create Draft PR with durable handoff")
+          assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit/push or reuse exact verified Candidate branch")
+          assert delivery.index("Commit/push or reuse exact verified Candidate branch") < delivery.index("Create Draft PR with durable handoff")
 
           assert "issues: write" in recovery_index
           assert "contents: none" in recovery_index
