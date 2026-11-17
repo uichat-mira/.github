@@ -163,10 +163,12 @@ AGT-059 replaces the transitional fingerprint with the deterministic execution-a
 - Delivery failure occurs after a verified Candidate exists; AGT-059 records it as `delivery_retry_only`, validates the prior Delivery evidence, and retries idempotently on the Candidate-origin branch without re-running the model.
 - Hard runner loss, force cancellation, platform termination, and hostile same-runner compromise remain outside the guarantee.
 
+The reusable workflow's `timeout_minutes` input is retained for caller compatibility but is now an advisory planning budget, defaulting to 60 minutes. It is not wired to a job/step timeout and must not kill a Worker when the budget elapses. GitHub-hosted runner platform limits remain an external ceiling; the workflow does not claim protection from platform termination.
+
 ### Caller compatibility and rollout boundary
 
 The reusable workflow input/output contract remains compatible: existing callers still pass `issue_number`, `base_branch`, `verification_command`, timeout, provider/model routing and provider secrets, and still receive Worker branch / Draft PR outputs.
 
-Mira product repositories currently pin immutable historical workflow SHAs. Merging AGT-058 into `uichat-mira/.github@main` therefore does **not** silently switch Desktop, Mobile, Relay, or other callers to the split-job engine. Each caller must deliberately repin to an accepted AGT-058 engine SHA.
+Mira product repositories currently pin immutable historical workflow SHAs. Merging AGT-059 into `uichat-mira/.github@main` therefore does **not** silently switch Desktop, Mobile, Relay, or other callers to the Recovery-enabled engine. Each caller must deliberately repin to an accepted AGT-058 engine SHA.
 
 The Organization free-worker wrapper also remains pinned to its existing historical engine until an explicit reviewed repin. AGT-059 additionally requires future callers to grant `actions: read` for prior-run Artifact recovery and `issues: write` for the isolated Recovery pointer job. These permissions are not silently introduced into existing pinned callers.
