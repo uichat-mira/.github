@@ -27,13 +27,18 @@ jobs:
             .github/scripts/worker-candidate/candidate.py \
             .github/scripts/worker-candidate/fixture.py \
             .github/scripts/worker-candidate/recovery.py \
-            .github/scripts/worker-candidate/recovery_fixture.py
+            .github/scripts/worker-candidate/recovery_fixture.py \
+            .github/scripts/worker-candidate/delivery.py \
+            .github/scripts/worker-candidate/delivery_fixture.py
 
       - name: Run Candidate round-trip and rejection fixtures
         run: python3 .github/scripts/worker-candidate/fixture.py
 
       - name: Run Recovery contract fixtures
         run: python3 .github/scripts/worker-candidate/recovery_fixture.py
+
+      - name: Run Delivery idempotency fixtures
+        run: python3 .github/scripts/worker-candidate/delivery_fixture.py
 
       - name: Assert production split-job topology, Recovery and permissions
         run: |
@@ -70,6 +75,11 @@ jobs:
           assert "base_advanced_3way_conflict" in worker
           assert "Re-publish verified Candidate for Delivery-only retry" in worker
           assert "candidate_base_sha" in worker
+          assert "--base-branch \"$BASE_BRANCH\"" in worker
+          assert "--verification-command \"$VERIFICATION_COMMAND\"" in worker
+          assert "candidate_artifact_identity_mismatch_or_expired" in worker
+          assert "candidate_exact_restore_failed" in worker
+          assert "Report already delivered Candidate" in worker
           assert "Capture durable Candidate" in worker
           assert "Run trusted repository verification" not in worker
           assert "Commit and push exact verified Candidate" not in worker
@@ -91,6 +101,11 @@ jobs:
           assert "needs:\n      - worker_capture\n      - verify" in delivery
           assert "delivery_retry_only" in delivery
           assert "Resolve verified Delivery handoff" in delivery
+          assert "Commit/push or reuse exact verified Candidate branch" in delivery
+          assert "trusted-delivery.py ensure-branch" in delivery
+          assert "trusted-delivery.py ensure-pr" in delivery
+          assert "needs.verify.outputs.candidate_tree_oid" not in delivery
+          assert "delivery_complete" in delivery
           assert "needs.worker_capture.outputs.candidate_base_sha" in delivery
           assert "contents: write" in delivery
           assert "issues: none" in delivery
