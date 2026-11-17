@@ -320,6 +320,12 @@ def decide(args: argparse.Namespace) -> int:
         require_equal("Candidate origin run id", as_int("Candidate run id", manifest.get("run_id")), as_int("pointer Candidate origin run id", pointer.get("candidate_origin_run_id")))
         require_equal("Candidate origin run attempt", as_int("Candidate run attempt", manifest.get("run_attempt")), as_int("pointer Candidate origin run attempt", pointer.get("candidate_origin_run_attempt")))
         require_equal("base branch", manifest.get("base_branch"), pointer.get("base_branch"))
+        expected_worker_branch = (
+            f"feat/worker-{args.issue_number}-"
+            f"{as_int('Candidate run id', manifest.get('run_id'))}-"
+            f"{as_int('Candidate run attempt', manifest.get('run_attempt'))}"
+        )
+        require_equal("Candidate worker branch", pointer.get("worker_branch"), expected_worker_branch)
         require_equal("base SHA", manifest.get("base_sha"), pointer.get("base_sha"))
         require_equal("candidate patch digest", manifest.get("candidate_patch_sha256"), pointer.get("candidate_patch_sha256"))
         require_equal("candidate tree", manifest.get("candidate_tree_oid"), pointer.get("candidate_tree_oid"))
