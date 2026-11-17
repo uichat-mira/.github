@@ -104,7 +104,10 @@ jobs:
           assert "Commit/push or reuse exact verified Candidate branch" in delivery
           assert "trusted-delivery.py ensure-branch" in delivery
           assert "trusted-delivery.py ensure-pr" in delivery
-          assert "needs.verify.outputs.candidate_tree_oid" not in delivery
+          boundary_start = delivery.index("Verify Draft PR and exact Candidate delivery boundary")
+          boundary = delivery[boundary_start:]
+          assert "needs.verify.outputs.candidate_tree_oid" not in boundary
+          assert "steps.verified_handoff.outputs.candidate_tree_oid" in boundary
           assert "delivery_complete" in delivery
           assert "needs.worker_capture.outputs.candidate_base_sha" in delivery
           assert "contents: write" in delivery
