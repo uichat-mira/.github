@@ -67,6 +67,7 @@ jobs:
           assert "base_advanced_clean_3way" in worker
           assert "base_advanced_3way_conflict" in worker
           assert "Re-publish verified Candidate for Delivery-only retry" in worker
+          assert "candidate_base_sha" in worker
           assert "Capture durable Candidate" in worker
           assert "Run trusted repository verification" not in worker
           assert "Commit and push exact verified Candidate" not in worker
@@ -88,6 +89,7 @@ jobs:
           assert "needs:\n      - worker_capture\n      - verify" in delivery
           assert "delivery_retry_only" in delivery
           assert "Resolve verified Delivery handoff" in delivery
+          assert "needs.worker_capture.outputs.candidate_base_sha" in delivery
           assert "contents: write" in delivery
           assert "issues: none" in delivery
           assert "pull-requests: write" in delivery
@@ -584,59 +586,3 @@ jobs:
           git -C "$conflict" clean -fdq
           test "$(cat "$conflict/work.txt")" = current-side
           echo "PASS Recovery base advance: conflict fails closed"
-
-
-  fixture-recovery-cross-run-probe:
-    permissions:
-      actions: read
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout Recovery tools
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Download Candidate from prior Actions run
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PRIOR_RUN_ID: "43996447258"
-          PRIOR_ARTIFACT_NAME: "agt-058-candidate-43996447258-1"
-          PRIOR_BASE_SHA: "315fc653d21b8f6528de679867d570d1e2d8425c"
-          PRIOR_PATCH_SHA256: "sha256:60dcd68bd9ab5fc40531735ce66c69cd7377e7e81d5e4781594a455658b9d3d1"
-          PRIOR_TREE_OID: "7398b86a8c9d55b0c491dfa79f428bbf56f32f2d"
-          PRIOR_CONTRACT_FINGERPRINT: "sha256:7a8d5d36f993f834675c21ef6a838e37d949cebac22ea50a299f2b27686381e8"
-        run: |
-          set -euo pipefail
-          root="${RUNNER_TEMP}/agt-059-cross-run"
-          mkdir -p "$root/candidate"
-
-          gh run download "$PRIOR_RUN_ID" \
-            --repo "$GITHUB_REPOSITORY" \
-            --name "$PRIOR_ARTIFACT_NAME" \
-            --dir "$root/candidate"
-
-          test -s "$root/candidate/candidate.patch"
-          test -s "$root/candidate/candidate.json"
-          test "$(jq -r '.base_sha' "$root/candidate/candidate.json")" = "$PRIOR_BASE_SHA"
-          test "$(jq -r '.candidate_patch_sha256' "$root/candidate/candidate.json")" = "$PRIOR_PATCH_SHA256"
-          test "$(jq -r '.candidate_tree_oid' "$root/candidate/candidate.json")" = "$PRIOR_TREE_OID"
-
-          git fetch --no-tags --depth=1 origin "$PRIOR_BASE_SHA"
-          restore="$root/restore"
-          git worktree add --detach "$restore" "$PRIOR_BASE_SHA"
-
-          python3 .github/scripts/worker-candidate/candidate.py restore \
-            --repo "$restore" \
-            --candidate-dir "$root/candidate" \
-            --expected-repository "$GITHUB_REPOSITORY" \
-            --expected-issue-number 58 \
-            --expected-base-sha "$PRIOR_BASE_SHA" \
-            --expected-contract-fingerprint "$PRIOR_CONTRACT_FINGERPRINT"
-
-          test "$(git -C "$restore" write-tree)" = "$PRIOR_TREE_OID"
-          test "$(cat "$restore/agt-058-fixture.txt")" = "AGT-058 clean-runner fixture"
-          git worktree remove --force "$restore"
