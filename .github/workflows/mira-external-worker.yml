@@ -54,24 +54,36 @@ on:
         required: false
     outputs:
       worker_branch:
-        description: Isolated worker branch created from the explicit base
-        value: ${{ jobs.worker.outputs.worker_branch }}
+        description: Isolated worker branch name reserved from the explicit base
+        value: ${{ jobs.worker_capture.outputs.worker_branch }}
       pull_request_url:
-        description: Draft pull request URL when the run succeeds
-        value: ${{ jobs.worker.outputs.pull_request_url }}
+        description: Draft pull request URL when verified Delivery succeeds
+        value: ${{ jobs.delivery.outputs.pull_request_url }}
 
 permissions:
-  contents: write
+  contents: read
   issues: read
-  pull-requests: write
+  pull-requests: none
 
 jobs:
-  worker:
+  worker_capture:
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: none
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       worker_branch: ${{ steps.identity.outputs.worker_branch }}
-      pull_request_url: ${{ steps.pr.outputs.url }}
+      base_sha: ${{ steps.identity.outputs.base_sha }}
+      candidate_artifact_name: ${{ steps.candidate.outputs.artifact_name }}
+      candidate_patch_sha256: ${{ steps.candidate.outputs.patch_sha256 }}
+      candidate_tree_oid: ${{ steps.candidate.outputs.tree_oid }}
+      contract_fingerprint: ${{ steps.candidate.outputs.contract_fingerprint }}
+      provider: ${{ steps.provider.outputs.provider }}
+      provider_profile: ${{ steps.provider.outputs.provider_profile }}
+      provider_registry_ref: ${{ steps.provider.outputs.provider_registry_ref }}
+      model_route: ${{ steps.provider.outputs.model_route }}
 
     steps:
       - name: Validate Mira caller and work item
@@ -838,8 +850,19 @@ jobs:
           PY
 
           if test "$candidate_rc" -eq 0; then
-            echo "state=captured" >> "$GITHUB_OUTPUT"
-            echo "recoverable=false" >> "$GITHUB_OUTPUT"
+            patch_sha256="$(jq -r '.candidate_patch_sha256' "$candidate_dir/candidate.json")"
+            tree_oid="$(jq -r '.candidate_tree_oid' "$candidate_dir/candidate.json")"
+            contract_fingerprint="$(jq -r '.contract_fingerprint' "$candidate_dir/candidate.json")"
+            test -n "$patch_sha256"
+            test -n "$tree_oid"
+            test -n "$contract_fingerprint"
+            {
+              echo "state=captured"
+              echo "recoverable=false"
+              echo "patch_sha256=$patch_sha256"
+              echo "tree_oid=$tree_oid"
+              echo "contract_fingerprint=$contract_fingerprint"
+            } >> "$GITHUB_OUTPUT"
           else
             if test "$candidate_rc" -eq 2; then
               echo "state=rejected" >> "$GITHUB_OUTPUT"
