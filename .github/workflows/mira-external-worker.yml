@@ -1270,10 +1270,14 @@ jobs:
               echo "verified_patch_sha256=$verify_patch"
               echo "verified_tree_oid=$verify_tree"
               echo "verified_contract_fingerprint=$contract"
-              echo "provider=$(jq -r '.provider // ""' "$manifest")"
-              echo "provider_profile="
-              echo "provider_registry_ref="
-              echo "model_route=$(jq -r 'if (.provider // "") != "" and (.model // "") != "" then (.provider + "/" + .model) else "" end' "$manifest")"
+              echo "provider=$(jq -r '.provider // .provider_fallback // ""' "$root/recovery/pointer.json" 2>/dev/null || jq -r '.provider // ""' "$manifest")"
+              echo "provider_profile=$(jq -r '.provider_profile // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              echo "provider_registry_ref=$(jq -r '.provider_registry_ref // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              model_route="$(jq -r '.model_route // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              if test -z "$model_route"; then
+                model_route="$(jq -r 'if (.provider // "") != "" and (.model // "") != "" then (.provider + "/" + .model) else "" end' "$manifest")"
+              fi
+              echo "model_route=$model_route"
             } >> "$GITHUB_OUTPUT"
           else
             {
@@ -2108,6 +2112,10 @@ jobs:
           CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
           CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           AMBIGUITY_GUARD: ${{ needs.worker_capture.outputs.ambiguity_guard }}
+          PROVIDER: ${{ needs.worker_capture.outputs.provider }}
+          PROVIDER_PROFILE: ${{ needs.worker_capture.outputs.provider_profile }}
+          PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
+          MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           NORMAL_VERIFY_RESULT: ${{ needs.verify.result }}
           NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
           RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
@@ -2143,6 +2151,10 @@ jobs:
             --arg candidate_tree_oid "$CANDIDATE_TREE_OID" \
             --arg contract_fingerprint "$CONTRACT_FINGERPRINT" \
             --arg ambiguity_guard "$AMBIGUITY_GUARD" \
+            --arg provider "$PROVIDER" \
+            --arg provider_profile "$PROVIDER_PROFILE" \
+            --arg provider_registry_ref "$PROVIDER_REGISTRY_REF" \
+            --arg model_route "$MODEL_ROUTE" \
             --arg verification_state "$verify_state" \
             --arg verification_artifact_name "$verify_artifact" \
             --arg delivery_state "$delivery_state" \
@@ -2164,6 +2176,10 @@ jobs:
               candidate_tree_oid: $candidate_tree_oid,
               contract_fingerprint: $contract_fingerprint,
               ambiguity_guard: $ambiguity_guard,
+              provider: $provider,
+              provider_profile: $provider_profile,
+              provider_registry_ref: $provider_registry_ref,
+              model_route: $model_route,
               verification_state: $verification_state,
               verification_artifact_name: $verification_artifact_name,
               delivery_state: $delivery_state,
