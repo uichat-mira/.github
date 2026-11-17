@@ -150,6 +150,70 @@ jobs:
           test "$(cat "$restore/work.txt")" = "worker-progress"
           test "$(cat "$restore/new.txt")" = "new-file"
 
+      - name: Exercise normal, no-change, and safety-rejection states
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root="${RUNNER_TEMP}/agt-057-state-fixtures"
+          repo="${root}/normal"
+          mkdir -p "$repo"
+          git -C "$repo" init -q
+          git -C "$repo" config user.name "Mira Candidate Fixture"
+          git -C "$repo" config user.email "fixture@example.invalid"
+          printf 'base\n' > "$repo/work.txt"
+          git -C "$repo" add -A
+          git -C "$repo" commit -qm base
+          base_sha="$(git -C "$repo" rev-parse HEAD)"
+
+          # Exact production no-change predicate: do not manufacture a Candidate.
+          git -C "$repo" diff --quiet "$base_sha" --
+          test -z "$(git -C "$repo" ls-files --others --exclude-standard)"
+
+          # Normal Worker success path: an effective change produces a Candidate.
+          printf 'normal-worker-change\n' > "$repo/work.txt"
+          python3 .github/scripts/worker-candidate/candidate.py capture \
+            --repo "$repo" \
+            --output "${root}/normal-candidate" \
+            --repository "uichat-mira/candidate-fixture" \
+            --issue-number 57 \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --base-branch main \
+            --base-sha "$base_sha" \
+            --contract-fingerprint "sha256:6cf6609e1a936e902e4209c5b3854a63d4943d809b64b1d08bf2ee84732fba12" \
+            --worker-outcome success \
+            --provider fixture \
+            --model fixture-model
+          test -s "${root}/normal-candidate/candidate.patch"
+          test -s "${root}/normal-candidate/candidate.json"
+          test "$(jq -r '.worker_outcome' "${root}/normal-candidate/candidate.json")" = success
+
+          # Safety rejection remains fail-closed and therefore non-recoverable.
+          safety_repo="${root}/safety"
+          git clone -q "$repo" "$safety_repo"
+          git -C "$safety_repo" reset --hard -q "$base_sha"
+          git -C "$safety_repo" clean -fdq
+          printf 'fixture-secret\n' > "$safety_repo/.env"
+          set +e
+          python3 .github/scripts/worker-candidate/candidate.py capture \
+            --repo "$safety_repo" \
+            --output "${root}/rejected-candidate" \
+            --repository "uichat-mira/candidate-fixture" \
+            --issue-number 57 \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --base-branch main \
+            --base-sha "$base_sha" \
+            --contract-fingerprint "sha256:6cf6609e1a936e902e4209c5b3854a63d4943d809b64b1d08bf2ee84732fba12" \
+            --worker-outcome failure \
+            > "${root}/safety.stdout" 2> "${root}/safety.stderr"
+          safety_rc="$?"
+          set -e
+          test "$safety_rc" -eq 2
+          grep -q 'sensitive-path policy' "${root}/safety.stderr"
+          test ! -e "${root}/rejected-candidate/candidate.json"
+
       - name: Simulate Candidate artifact upload failure
         id: upload_failure
         continue-on-error: true
