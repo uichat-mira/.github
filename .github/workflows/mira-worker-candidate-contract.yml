@@ -27,220 +27,445 @@ jobs:
             .github/scripts/worker-candidate/candidate.py \
             .github/scripts/worker-candidate/fixture.py
 
-      - name: Run Candidate round-trip and failure fixtures
+      - name: Run Candidate round-trip and rejection fixtures
         run: python3 .github/scripts/worker-candidate/fixture.py
 
-      - name: Assert production Candidate stage ordering and fail-closed states
+      - name: Assert production split-job topology and permissions
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           workflow = Path(".github/workflows/mira-external-worker.yml").read_text()
-          capture = workflow.index("      - name: Capture durable Candidate")
-          upload = workflow.index("      - name: Upload durable Candidate")
-          bounded = workflow.index("      - name: Require a bounded implementation change")
-          verify = workflow.index("      - name: Run trusted repository verification")
-          assert capture < upload < bounded < verify
-          assert "steps.worker.outcome != 'skipped'" in workflow
-          assert "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" in workflow
-          assert '"state": "unavailable"' in workflow
-          assert '"reason": "no_changes"' in workflow
-          assert '"state": "rejected" if rc == 2 else "capture_failed"' in workflow
-          assert 'candidate["state"] = "upload_failed"' in workflow
-          assert 'candidate["recoverable"] = False' in workflow
-          assert 'candidate["recoverable"] = True' in workflow
+
+          worker_start = workflow.index("  worker_capture:")
+          verify_start = workflow.index("\n  verify:", worker_start)
+          delivery_start = workflow.index("\n  delivery:", verify_start)
+
+          worker = workflow[worker_start:verify_start]
+          verify = workflow[verify_start:delivery_start]
+          delivery = workflow[delivery_start:]
+
+          assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
+          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url }}" in workflow
+
+          assert "contents: read" in worker
+          assert "issues: read" in worker
+          assert "pull-requests: none" in worker
+          assert "contents: write" not in worker
+          assert "pull-requests: write" not in worker
+          assert "Capture durable Candidate" in worker
+          assert "Run trusted repository verification" not in worker
+          assert "Commit and push exact verified Candidate" not in worker
+
+          assert "needs: worker_capture" in verify
+          assert "contents: read" in verify
+          assert "issues: none" in verify
+          assert "pull-requests: none" in verify
+          assert "contents: write" not in verify
+          assert "pull-requests: write" not in verify
+          assert "secrets." not in verify
+          assert "GH_TOKEN:" not in verify
+          assert "Checkout exact Candidate base" in verify
+          assert "Download immutable Candidate" in verify
+          assert "Restore exact Candidate in clean Runner" in verify
+          assert "Run trusted repository verification" in verify
+          assert "Require verified Candidate" in verify
+
+          assert "needs:\n      - worker_capture\n      - verify" in delivery
+          assert "contents: write" in delivery
+          assert "issues: none" in delivery
+          assert "pull-requests: write" in delivery
+          assert "secrets." not in delivery
+          assert "opencode run" not in delivery
+          assert "opencode_go_api_key" not in delivery
+          assert "provider_api_key" not in delivery
+          assert "Download Verify evidence" in delivery
+          assert "Assert verified Candidate identity" in delivery
+          assert "Commit and push exact verified Candidate" in delivery
+          assert "Create Draft PR with durable handoff" in delivery
+          assert "Verify Draft PR and exact Candidate delivery boundary" in delivery
+
+          assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit and push exact verified Candidate")
+          assert delivery.index("Commit and push exact verified Candidate") < delivery.index("Create Draft PR with durable handoff")
           PY
 
-  durable-candidate-integration:
+  fixture-worker-capture:
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      base_sha: ${{ steps.identity.outputs.base_sha }}
+      patch_sha256: ${{ steps.capture.outputs.patch_sha256 }}
+      tree_oid: ${{ steps.capture.outputs.tree_oid }}
+      contract_fingerprint: ${{ steps.capture.outputs.contract_fingerprint }}
+      artifact_name: ${{ steps.capture.outputs.artifact_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Create disposable Worker fixture repository
+      - name: Freeze fixture base
+        id: identity
+        shell: bash
+        run: echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Simulate Worker change
         shell: bash
         run: |
           set -euo pipefail
-          root="${RUNNER_TEMP}/agt-057"
-          repo="${root}/source"
-          mkdir -p "$repo"
-          git -C "$repo" init -q
-          git -C "$repo" config user.name "Mira Candidate Fixture"
-          git -C "$repo" config user.email "fixture@example.invalid"
-          printf 'base\n' > "$repo/work.txt"
-          git -C "$repo" add -A
-          git -C "$repo" commit -qm base
-          base_sha="$(git -C "$repo" rev-parse HEAD)"
-          {
-            echo "FIXTURE_ROOT=$root"
-            echo "FIXTURE_REPO=$repo"
-            echo "FIXTURE_BASE_SHA=$base_sha"
-          } >> "$GITHUB_ENV"
+          printf 'AGT-058 clean-runner fixture\n' > agt-058-fixture.txt
 
-      - name: Simulate Worker modification then provider failure
-        id: worker_failure
-        continue-on-error: true
+      - name: Capture fixture Candidate
+        id: capture
         shell: bash
+        env:
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
         run: |
           set -euo pipefail
-          printf 'worker-progress\n' > "${FIXTURE_REPO}/work.txt"
-          printf 'new-file\n' > "${FIXTURE_REPO}/new.txt"
-          exit 42
+          out="${RUNNER_TEMP}/agt-058-candidate"
+          artifact_name="agt-058-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fingerprint="sha256:7a8d5d36f993f834675c21ef6a838e37d949cebac22ea50a299f2b27686381e8"
 
-      - name: Capture Candidate after failed Worker step
-        id: capture_after_failure
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
           python3 .github/scripts/worker-candidate/candidate.py capture \
-            --repo "$FIXTURE_REPO" \
-            --output "${FIXTURE_ROOT}/candidate" \
-            --repository "uichat-mira/candidate-fixture" \
-            --issue-number 57 \
-            --run-id "${GITHUB_RUN_ID}" \
-            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --repo "$GITHUB_WORKSPACE" \
+            --output "$out" \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number 58 \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --base-branch main \
-            --base-sha "$FIXTURE_BASE_SHA" \
-            --contract-fingerprint "sha256:6cf6609e1a936e902e4209c5b3854a63d4943d809b64b1d08bf2ee84732fba12" \
-            --worker-outcome failure \
+            --base-sha "$BASE_SHA" \
+            --contract-fingerprint "$fingerprint" \
+            --worker-outcome success \
             --provider fixture \
             --model fixture-model
 
-      - name: Upload Candidate from failed Worker fixture
-        id: failure_candidate_upload
-        if: ${{ always() && steps.capture_after_failure.outcome == 'success' }}
+          {
+            echo "artifact_name=$artifact_name"
+            echo "patch_sha256=$(jq -r '.candidate_patch_sha256' "$out/candidate.json")"
+            echo "tree_oid=$(jq -r '.candidate_tree_oid' "$out/candidate.json")"
+            echo "contract_fingerprint=$(jq -r '.contract_fingerprint' "$out/candidate.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload fixture Candidate
         uses: actions/upload-artifact@v4
         with:
-          name: agt-057-failed-worker-candidate-${{ github.run_id }}
+          name: ${{ steps.capture.outputs.artifact_name }}
           path: |
-            ${{ runner.temp }}/agt-057/candidate/candidate.patch
-            ${{ runner.temp }}/agt-057/candidate/candidate.json
+            ${{ runner.temp }}/agt-058-candidate/candidate.patch
+            ${{ runner.temp }}/agt-058-candidate/candidate.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
-      - name: Download uploaded failed-Worker Candidate
+  fixture-verify:
+    needs: fixture-worker-capture
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      patch_sha256: ${{ steps.restore.outputs.patch_sha256 }}
+      tree_oid: ${{ steps.restore.outputs.tree_oid }}
+      verification_artifact_name: ${{ steps.evidence.outputs.artifact_name }}
+    steps:
+      - name: Checkout exact fixture base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download fixture Candidate
         uses: actions/download-artifact@v4
         with:
-          name: agt-057-failed-worker-candidate-${{ github.run_id }}
-          path: ${{ runner.temp }}/agt-057/downloaded-candidate
+          name: ${{ needs.fixture-worker-capture.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agt-058-verify/candidate
 
-      - name: Simulate trusted verification failure after Candidate upload
+      - name: Restore Candidate in clean Verify Runner
+        id: restore
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ needs.fixture-worker-capture.outputs.contract_fingerprint }}
+          EXPECTED_PATCH: ${{ needs.fixture-worker-capture.outputs.patch_sha256 }}
+          EXPECTED_TREE: ${{ needs.fixture-worker-capture.outputs.tree_oid }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-058-verify"
+          python3 .github/scripts/worker-candidate/candidate.py restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number 58 \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT"
+
+          patch="$(jq -r '.candidate_patch_sha256' "$root/candidate/candidate.json")"
+          tree="$(jq -r '.candidate_tree_oid' "$root/candidate/candidate.json")"
+          test "$patch" = "$EXPECTED_PATCH"
+          test "$tree" = "$EXPECTED_TREE"
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          {
+            echo "patch_sha256=$patch"
+            echo "tree_oid=$tree"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run fixture repository verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat agt-058-fixture.txt)" = "AGT-058 clean-runner fixture"
+          git diff --check
+
+      - name: Write Verify evidence
+        id: evidence
+        shell: bash
+        env:
+          PATCH_SHA256: ${{ steps.restore.outputs.patch_sha256 }}
+          TREE_OID: ${{ steps.restore.outputs.tree_oid }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-058-verify"
+          artifact_name="agt-058-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          jq -n \
+            --arg patch "$PATCH_SHA256" \
+            --arg tree "$TREE_OID" \
+            '{terminal_status:"success", candidate_patch_sha256:$patch, candidate_tree_oid:$tree}' \
+            > "$root/verify-run.json"
+
+      - name: Upload Verify evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.evidence.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agt-058-verify/verify-run.json
+          if-no-files-found: error
+          retention-days: 1
+
+  fixture-verify-tamper:
+    needs: fixture-worker-capture
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact fixture base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download fixture Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.fixture-worker-capture.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agt-058-tamper/candidate
+
+      - name: Prove tampered Candidate fails closed
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ needs.fixture-worker-capture.outputs.contract_fingerprint }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-058-tamper"
+          printf '\n# tamper\n' >> "$root/candidate/candidate.patch"
+          set +e
+          python3 .github/scripts/worker-candidate/candidate.py restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number 58 \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT" \
+            > "$root/stdout" 2> "$root/stderr"
+          rc="$?"
+          set -e
+          test "$rc" -eq 2
+          grep -q "digest mismatch" "$root/stderr"
+
+  fixture-verification-failure:
+    needs: fixture-worker-capture
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact fixture base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download preserved Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.fixture-worker-capture.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agt-058-verify-failure/candidate
+
+      - name: Restore Candidate before intentional verification failure
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ needs.fixture-worker-capture.outputs.contract_fingerprint }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-058-verify-failure"
+          python3 .github/scripts/worker-candidate/candidate.py restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number 58 \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT"
+          test "$(git write-tree)" = "${{ needs.fixture-worker-capture.outputs.tree_oid }}"
+
+      - name: Record intentional repository verification failure
         id: verification_failure
         continue-on-error: true
         shell: bash
         run: exit 17
 
-      - name: Restore failed-Worker Candidate in clean checkout
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          restore="${FIXTURE_ROOT}/restore"
-          git clone -q "$FIXTURE_REPO" "$restore"
-          git -C "$restore" checkout -q "$FIXTURE_BASE_SHA"
-          python3 .github/scripts/worker-candidate/candidate.py restore \
-            --repo "$restore" \
-            --candidate-dir "${FIXTURE_ROOT}/downloaded-candidate" \
-            --expected-repository "uichat-mira/candidate-fixture" \
-            --expected-issue-number 57 \
-            --expected-base-sha "$FIXTURE_BASE_SHA" \
-            --expected-contract-fingerprint "sha256:6cf6609e1a936e902e4209c5b3854a63d4943d809b64b1d08bf2ee84732fba12"
-          test "$(cat "$restore/work.txt")" = "worker-progress"
-          test "$(cat "$restore/new.txt")" = "new-file"
-
-      - name: Exercise normal, no-change, and safety-rejection states
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          root="${RUNNER_TEMP}/agt-057-state-fixtures"
-          repo="${root}/normal"
-          mkdir -p "$repo"
-          git -C "$repo" init -q
-          git -C "$repo" config user.name "Mira Candidate Fixture"
-          git -C "$repo" config user.email "fixture@example.invalid"
-          printf 'base\n' > "$repo/work.txt"
-          git -C "$repo" add -A
-          git -C "$repo" commit -qm base
-          base_sha="$(git -C "$repo" rev-parse HEAD)"
-
-          # Exact production no-change predicate: do not manufacture a Candidate.
-          git -C "$repo" diff --quiet "$base_sha" --
-          test -z "$(git -C "$repo" ls-files --others --exclude-standard)"
-
-          # Normal Worker success path: an effective change produces a Candidate.
-          printf 'normal-worker-change\n' > "$repo/work.txt"
-          python3 .github/scripts/worker-candidate/candidate.py capture \
-            --repo "$repo" \
-            --output "${root}/normal-candidate" \
-            --repository "uichat-mira/candidate-fixture" \
-            --issue-number 57 \
-            --run-id "${GITHUB_RUN_ID}" \
-            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --base-branch main \
-            --base-sha "$base_sha" \
-            --contract-fingerprint "sha256:6cf6609e1a936e902e4209c5b3854a63d4943d809b64b1d08bf2ee84732fba12" \
-            --worker-outcome success \
-            --provider fixture \
-            --model fixture-model
-          test -s "${root}/normal-candidate/candidate.patch"
-          test -s "${root}/normal-candidate/candidate.json"
-          test "$(jq -r '.worker_outcome' "${root}/normal-candidate/candidate.json")" = success
-
-          # Safety rejection remains fail-closed and therefore non-recoverable.
-          safety_repo="${root}/safety"
-          git clone -q "$repo" "$safety_repo"
-          git -C "$safety_repo" reset --hard -q "$base_sha"
-          git -C "$safety_repo" clean -fdq
-          printf 'fixture-secret\n' > "$safety_repo/.env"
-          set +e
-          python3 .github/scripts/worker-candidate/candidate.py capture \
-            --repo "$safety_repo" \
-            --output "${root}/rejected-candidate" \
-            --repository "uichat-mira/candidate-fixture" \
-            --issue-number 57 \
-            --run-id "${GITHUB_RUN_ID}" \
-            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --base-branch main \
-            --base-sha "$base_sha" \
-            --contract-fingerprint "sha256:6cf6609e1a936e902e4209c5b3854a63d4943d809b64b1d08bf2ee84732fba12" \
-            --worker-outcome failure \
-            > "${root}/safety.stdout" 2> "${root}/safety.stderr"
-          safety_rc="$?"
-          set -e
-          test "$safety_rc" -eq 2
-          grep -q 'sensitive-path policy' "${root}/safety.stderr"
-          test ! -e "${root}/rejected-candidate/candidate.json"
-
-      - name: Simulate Candidate artifact upload failure
-        id: upload_failure
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: agt-057-missing-candidate-${{ github.run_id }}
-          path: ${{ runner.temp }}/agt-057/does-not-exist/**
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Assert failure/recovery signals
-        if: ${{ always() }}
+      - name: Assert Candidate remains preserved and Delivery is forbidden
         shell: bash
         env:
-          WORKER_OUTCOME: ${{ steps.worker_failure.outcome }}
-          CAPTURE_OUTCOME: ${{ steps.capture_after_failure.outcome }}
-          UPLOAD_OUTCOME: ${{ steps.failure_candidate_upload.outcome }}
-          UPLOAD_ID: ${{ steps.failure_candidate_upload.outputs.artifact-id }}
-          UPLOAD_DIGEST: ${{ steps.failure_candidate_upload.outputs.artifact-digest }}
           VERIFY_OUTCOME: ${{ steps.verification_failure.outcome }}
-          FAILED_UPLOAD_OUTCOME: ${{ steps.upload_failure.outcome }}
         run: |
           set -euo pipefail
-          test "$WORKER_OUTCOME" = failure
-          test "$CAPTURE_OUTCOME" = success
-          test "$UPLOAD_OUTCOME" = success
-          test -n "$UPLOAD_ID"
-          test -n "$UPLOAD_DIGEST"
           test "$VERIFY_OUTCOME" = failure
-          test "$FAILED_UPLOAD_OUTCOME" = failure
+          test -s "${RUNNER_TEMP}/agt-058-verify-failure/candidate/candidate.patch"
+          test -s "${RUNNER_TEMP}/agt-058-verify-failure/candidate/candidate.json"
+          printf '{"terminal_status":"failure","candidate_preserved":true,"delivery_allowed":false}\n' > verify-failure.json
+          jq -e '.terminal_status == "failure" and .candidate_preserved == true and .delivery_allowed == false' verify-failure.json >/dev/null
+
+  fixture-delivery-failure:
+    needs:
+      - fixture-worker-capture
+      - fixture-verify
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout workflow under test
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Assert Delivery phase has verified Candidate and no model authority
+        shell: bash
+        env:
+          WORKER_PATCH: ${{ needs.fixture-worker-capture.outputs.patch_sha256 }}
+          WORKER_TREE: ${{ needs.fixture-worker-capture.outputs.tree_oid }}
+          VERIFY_PATCH: ${{ needs.fixture-verify.outputs.patch_sha256 }}
+          VERIFY_TREE: ${{ needs.fixture-verify.outputs.tree_oid }}
+        run: |
+          set -euo pipefail
+          test "$WORKER_PATCH" = "$VERIFY_PATCH"
+          test "$WORKER_TREE" = "$VERIFY_TREE"
+          python3 - <<'PY'
+          from pathlib import Path
+          workflow = Path(".github/workflows/mira-external-worker.yml").read_text()
+          delivery = workflow[workflow.index("\n  delivery:"):]
+          assert "opencode run" not in delivery
+          assert "opencode_go_api_key" not in delivery
+          assert "provider_api_key" not in delivery
+          assert "secrets." not in delivery
+          PY
+
+      - name: Simulate GitHub Delivery failure after Verify PASS
+        id: delivery_failure
+        continue-on-error: true
+        shell: bash
+        run: exit 23
+
+      - name: Assert failure is isolated to Delivery
+        shell: bash
+        env:
+          DELIVERY_OUTCOME: ${{ steps.delivery_failure.outcome }}
+        run: |
+          set -euo pipefail
+          test "$DELIVERY_OUTCOME" = failure
+          printf '{"verify":"success","delivery":"failure","model_rerun_required":false}\n' > delivery-failure.json
+          jq -e '.verify == "success" and .delivery == "failure" and .model_rerun_required == false' delivery-failure.json >/dev/null
+
+  fixture-delivery:
+    needs:
+      - fixture-worker-capture
+      - fixture-verify
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact fixture base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download exact Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.fixture-worker-capture.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agt-058-delivery/candidate
+
+      - name: Download Verify evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.fixture-verify.outputs.verification_artifact_name }}
+          path: ${{ runner.temp }}/agt-058-delivery/verify
+
+      - name: Restore and commit exact verified Candidate locally
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.fixture-worker-capture.outputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ needs.fixture-worker-capture.outputs.contract_fingerprint }}
+          WORKER_PATCH: ${{ needs.fixture-worker-capture.outputs.patch_sha256 }}
+          WORKER_TREE: ${{ needs.fixture-worker-capture.outputs.tree_oid }}
+          VERIFY_PATCH: ${{ needs.fixture-verify.outputs.patch_sha256 }}
+          VERIFY_TREE: ${{ needs.fixture-verify.outputs.tree_oid }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-058-delivery"
+          git switch -c agt-058-local-delivery
+          python3 .github/scripts/worker-candidate/candidate.py restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number 58 \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT"
+
+          manifest_patch="$(jq -r '.candidate_patch_sha256' "$root/candidate/candidate.json")"
+          manifest_tree="$(jq -r '.candidate_tree_oid' "$root/candidate/candidate.json")"
+          verify_status="$(jq -r '.terminal_status' "$root/verify/verify-run.json")"
+          test "$verify_status" = success
+          test "$manifest_patch" = "$WORKER_PATCH"
+          test "$manifest_patch" = "$VERIFY_PATCH"
+          test "$manifest_tree" = "$WORKER_TREE"
+          test "$manifest_tree" = "$VERIFY_TREE"
+          test "$(git write-tree)" = "$manifest_tree"
+
+          git config user.name "Mira Delivery Fixture"
+          git config user.email "fixture@example.invalid"
+          git commit -qm "fixture: exact verified candidate"
+          test "$(git rev-parse HEAD^{tree})" = "$manifest_tree"

@@ -2,23 +2,45 @@
 
 Status: active Organization guidance.
 
-The Mira External Worker emits a bounded evidence package for every run that reaches the evidence finalizer. This package complements GitHub Actions logs; it does not replace the GitHub Issue, branch, commit, pull request, or Actions run as the durable engineering ledger.
+The Mira External Worker emits bounded, role-specific evidence artifacts across Worker/Capture, Verify, and Delivery. These artifacts complement GitHub Actions logs; they do not replace the GitHub Issue, Candidate, branch, commit, pull request, or Actions run as the durable engineering ledger.
 
 ## Package
 
-The reusable Worker currently uploads:
+AGT-058 separates evidence by execution boundary:
 
-- `worker-run.json` — run identity, base/branch identity, pinned OpenCode/Skill identity, selected provider/profile/model route and frozen provider-registry revision, trusted step outcomes, terminal status, failure stage, commit/PR pointers, trusted verification identity, retention, and safety metadata.
-- `trajectory.jsonl` — metadata-only OpenCode session activity derived from a sanitized native session export. It records tool/step identity and state but omits prompt text, reasoning, tool arguments, and tool results.
-- `session-summary.json` — whether a structured OpenCode export was available, resolved session ID, event count, event bound, and truncation state.
-- `worker-output.txt` and `worker-output-meta.json` — bounded Worker handoff/output plus byte/truncation metadata.
-- `verification.log` and `verification-meta.json` — bounded trusted verification output plus byte/truncation metadata.
-- `candidate-status.json` and bounded Candidate capture stdout/stderr — whether Candidate capture was attempted, unavailable, rejected, captured, or failed, without duplicating the Candidate patch into diagnostic evidence.
-- `changed-files.txt`, `committed-files.txt`, and `diff-stat.txt` — bounded repository mutation summaries without persisting a full repository snapshot.
+### Worker/Capture evidence
 
-When a recoverable Candidate is captured, it is uploaded as a **separate immutable Actions Artifact** named for the run/attempt. That Artifact contains `candidate.patch` and `candidate.json`; it is not embedded into the diagnostic evidence package. `worker-run.json` records the Candidate state, patch/tree identity, Artifact ID/URL/digest, upload outcome, recoverability, and retention.
+The `mira-external-worker-<run_id>` Artifact contains bounded Worker/Capture evidence such as:
 
-Exact filenames are an implementation detail. The durable contract is that equivalent evidence remains machine-readable, bounded, attributable to one immutable run identity, and useful on both success and failure paths.
+- `worker-run.json` — Worker/Capture run identity, provider/model route, stage outcomes, Candidate pointer/recoverability and permission metadata;
+- `identity.txt`, `issue.json`, trusted-maintainer comment snapshot and `provider-route.json` — durable handoff inputs needed by later trusted stages;
+- metadata-only trajectory/session summary;
+- bounded Worker output;
+- `candidate-status.json` plus bounded Candidate capture stdout/stderr;
+- changed-file / Candidate diff summaries.
+
+The recoverable `candidate.patch` and `candidate.json` remain in a **separate immutable Candidate Artifact** named for run/attempt.
+
+### Verify evidence
+
+The `mira-external-worker-verify-<run_id>-<attempt>` Artifact records:
+
+- `verify-run.json` — exact base, Candidate patch/tree identity, clean restore result, verification outcome and read-only permission contract;
+- bounded verification log and metadata;
+- Candidate restore result when available.
+
+Verify evidence is tied to the exact Candidate identity. It does not contain provider credentials and has no GitHub mutation authority.
+
+### Delivery evidence
+
+The `mira-external-worker-delivery-<run_id>-<attempt>` Artifact records:
+
+- `delivery-run.json` — restored Candidate identity, commit/push/Draft-PR stages, commit SHA, PR URL and Delivery authority boundary;
+- Delivery restore result when available.
+
+Delivery evidence exists independently of Worker model execution. A Delivery failure after Verify PASS therefore does not require the model to run again.
+
+Exact filenames remain implementation detail. The durable contract is that evidence is machine-readable, bounded, attributable to one immutable run/Candidate identity, and reflects the actual job boundary that produced it.
 
 ## Provider/model identity
 
@@ -29,7 +51,7 @@ Exact filenames are an implementation detail. The durable contract is that equiv
 The evidence package distinguishes two classes of activity:
 
 1. model-owned repository reasoning/edit activity, represented by the OpenCode session-derived metadata trajectory and bounded Worker output;
-2. trusted workflow-owned validation, verification, Git mutation, and Draft PR stages, represented by explicit GitHub Actions step outcomes in `worker-run.json`.
+2. trusted workflow-owned Capture, clean-room Verify, and Delivery activity, represented by separate role-specific Actions jobs and evidence artifacts.
 
 A model session cannot grant itself merge, Issue outcome, release, deployment, promotion, or broader workflow authority.
 
@@ -55,7 +77,7 @@ Persisted evidence must not contain provider credentials, GitHub tokens, environ
 Current bounds:
 
 - Worker persisted output: 120 KB maximum.
-- Trusted verification persisted output: 120 KB maximum.
+- Trusted Verify persisted output: 120 KB maximum.
 - Session-derived trajectory: 500 events maximum.
 - Diagnostic Actions artifact retention: 14 days.
 - Candidate Actions artifact retention: 14 days in the current AGT-057 implementation. This is an implementation retention window, not a promise of permanent recovery storage.
@@ -64,24 +86,14 @@ Truncation is explicit in companion metadata rather than silently dropping conte
 
 ## Failure semantics
 
-`worker-run.json` records every trusted stage outcome and derives:
+AGT-058 no longer compresses the entire pipeline into one terminal status. The Actions job graph and role-specific evidence distinguish:
 
-- `terminal_status`;
-- `failure_stage`;
-- the last stages that completed successfully;
-- commit and Draft PR pointers only when those states were actually reached.
+- **Worker/Capture failure** — no Verify or Delivery is authorized; a successfully uploaded Candidate may still be recoverable.
+- **Verify failure** — Candidate and Verify evidence remain; Delivery is skipped, so no branch push or Draft PR is created.
+- **Delivery failure** — Verify already passed for the same Candidate identity; Delivery evidence records the failed stage, and the model does not need to run again merely to retry Git delivery.
+- **Success** — Delivery commit tree is mechanically equal to the verified Candidate tree and the resulting PR is Draft against the explicit delivery base.
 
-A run that fails before commit or PR creation must still be diagnosable from the package without prior ChatGPT-thread memory.
-
-When Worker execution reached a mutable workspace, trusted Candidate capture runs before bounded-change verification and trusted repository verification. `worker-run.json` distinguishes at least:
-
-- `captured` with successful Artifact upload → `recoverable=true`;
-- `unavailable` (for example, no effective workspace change);
-- `rejected` when the Candidate contract/safety boundary refuses persistence;
-- `capture_failed`;
-- `upload_failed` when local capture succeeded but durable Artifact upload did not.
-
-A local patch is **not** considered recoverable until its Candidate Artifact upload succeeds. Candidate capture or upload failure therefore remains an explicit recovery failure, even when other diagnostic evidence exists.
+A local patch is never considered recoverable until its Candidate Artifact upload succeeds. A Candidate is never considered verified merely because Worker self-tests passed. A verified Candidate is never considered delivered merely because Verify passed.
 
 ## Source of truth
 

@@ -54,24 +54,36 @@ on:
         required: false
     outputs:
       worker_branch:
-        description: Isolated worker branch created from the explicit base
-        value: ${{ jobs.worker.outputs.worker_branch }}
+        description: Isolated worker branch name reserved from the explicit base
+        value: ${{ jobs.worker_capture.outputs.worker_branch }}
       pull_request_url:
-        description: Draft pull request URL when the run succeeds
-        value: ${{ jobs.worker.outputs.pull_request_url }}
+        description: Draft pull request URL when verified Delivery succeeds
+        value: ${{ jobs.delivery.outputs.pull_request_url }}
 
 permissions:
-  contents: write
+  contents: read
   issues: read
-  pull-requests: write
+  pull-requests: none
 
 jobs:
-  worker:
+  worker_capture:
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: none
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       worker_branch: ${{ steps.identity.outputs.worker_branch }}
-      pull_request_url: ${{ steps.pr.outputs.url }}
+      base_sha: ${{ steps.identity.outputs.base_sha }}
+      candidate_artifact_name: ${{ steps.candidate.outputs.artifact_name }}
+      candidate_patch_sha256: ${{ steps.candidate.outputs.patch_sha256 }}
+      candidate_tree_oid: ${{ steps.candidate.outputs.tree_oid }}
+      contract_fingerprint: ${{ steps.candidate.outputs.contract_fingerprint }}
+      provider: ${{ steps.provider.outputs.provider }}
+      provider_profile: ${{ steps.provider.outputs.provider_profile }}
+      provider_registry_ref: ${{ steps.provider.outputs.provider_registry_ref }}
+      model_route: ${{ steps.provider.outputs.model_route }}
 
     steps:
       - name: Validate Mira caller and work item
@@ -838,8 +850,19 @@ jobs:
           PY
 
           if test "$candidate_rc" -eq 0; then
-            echo "state=captured" >> "$GITHUB_OUTPUT"
-            echo "recoverable=false" >> "$GITHUB_OUTPUT"
+            patch_sha256="$(jq -r '.candidate_patch_sha256' "$candidate_dir/candidate.json")"
+            tree_oid="$(jq -r '.candidate_tree_oid' "$candidate_dir/candidate.json")"
+            contract_fingerprint="$(jq -r '.contract_fingerprint' "$candidate_dir/candidate.json")"
+            test -n "$patch_sha256"
+            test -n "$tree_oid"
+            test -n "$contract_fingerprint"
+            {
+              echo "state=captured"
+              echo "recoverable=false"
+              echo "patch_sha256=$patch_sha256"
+              echo "tree_oid=$tree_oid"
+              echo "contract_fingerprint=$contract_fingerprint"
+            } >> "$GITHUB_OUTPUT"
           else
             if test "$candidate_rc" -eq 2; then
               echo "state=rejected" >> "$GITHUB_OUTPUT"
@@ -875,147 +898,8 @@ jobs:
 
           git diff --check
 
-      - name: Run trusted repository verification
-        id: verify
-        shell: bash
-        env:
-          MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
-        run: |
-          set -euo pipefail
-          test -n "${MIRA_VERIFICATION_COMMAND}"
-
-          set +e
-          {
-            echo "$ ${MIRA_VERIFICATION_COMMAND}"
-            bash -lc "${MIRA_VERIFICATION_COMMAND}"
-          } 2>&1 | tee "${RUNNER_TEMP}/mira-worker/verification.raw"
-          verification_rc="${PIPESTATUS[0]}"
-          set -e
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import json, os
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
-          src = root / "verification.raw"
-          dst = root / "verification.log"
-          limit = 120_000
-          data = src.read_bytes() if src.exists() else b""
-          truncated = len(data) > limit
-          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
-          (root / "verification-meta.json").write_text(
-              json.dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n"
-          )
-          PY
-
-          exit "$verification_rc"
-
-      - name: Commit and push isolated worker branch
-        id: commit
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ inputs.issue_number }}
-          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
-        run: |
-          set -euo pipefail
-
-          git config user.name "mira-agent-worker[bot]"
-          git config user.email "mira-agent-worker[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "agent: implement issue #${ISSUE_NUMBER}"
-
-          gh auth setup-git
-          git push --set-upstream origin "HEAD:${WORKER_BRANCH}"
-
-      - name: Create Draft PR with durable handoff
-        id: pr
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ inputs.issue_number }}
-          BASE_BRANCH: ${{ inputs.base_branch }}
-          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
-          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
-          PROVIDER: ${{ steps.provider.outputs.provider }}
-          PROVIDER_PROFILE: ${{ steps.provider.outputs.provider_profile }}
-          PROVIDER_REGISTRY_REF: ${{ steps.provider.outputs.provider_registry_ref }}
-          MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
-          OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
-          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
-        run: |
-          set -euo pipefail
-
-          export ISSUE_TITLE
-          ISSUE_TITLE="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json" | cut -c1-220)"
-
-          python3 <<'PY'
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
-          worker_output = (root / "worker-output.txt").read_text(errors="replace")[:12000]
-          verification_output = (root / "verification.log").read_text(errors="replace")[:12000]
-
-          body = f"""## Mira external Worker handoff
-
-          - Work item: #{os.environ["ISSUE_NUMBER"]} — {os.environ["ISSUE_TITLE"]}
-          - Delivery base: `{os.environ["BASE_BRANCH"]}`
-          - Base SHA: `{os.environ["BASE_SHA"]}`
-          - Worker branch: `{os.environ["WORKER_BRANCH"]}`
-          - Worker harness: OpenCode CLI ${os.environ["OPENCODE_VERSION"]}
-          - Provider: `{os.environ["PROVIDER"]}`
-          - Provider profile: `{os.environ["PROVIDER_PROFILE"] or "builtin"}`
-          - Provider registry revision: `{os.environ["PROVIDER_REGISTRY_REF"]}`
-          - Model route: `{os.environ["MODEL_ROUTE"]}`
-          - Portable Skill: `execute-work-item@d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9`
-          - Verification: PASS
-          - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
-
-          This PR is intentionally **Draft**. Worker execution does not grant merge, Issue acceptance/closure, environment promotion, release, or deployment authority.
-
-          <details>
-          <summary>Worker handoff</summary>
-
-          <pre>
-          {worker_output}
-          </pre>
-          </details>
-
-          <details>
-          <summary>Verification output</summary>
-
-          <pre>
-          {verification_output}
-          </pre>
-          </details>
-          """
-          (root / "pr-body.md").write_text(body)
-          PY
-
-          pr_url="$(gh pr create             --draft             --base "$BASE_BRANCH"             --head "$WORKER_BRANCH"             --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}"             --body-file "${RUNNER_TEMP}/mira-worker/pr-body.md")"
-
-          test -n "$pr_url"
-          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
-
-      - name: Verify Draft PR boundary
-        id: boundary
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ steps.pr.outputs.url }}
-          BASE_BRANCH: ${{ inputs.base_branch }}
-          WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
-        run: |
-          set -euo pipefail
-
-          pr_json="$(gh pr view "$PR_URL" --json isDraft,baseRefName,headRefName,state)"
-          test "$(jq -r '.isDraft' <<< "$pr_json")" = "true"
-          test "$(jq -r '.baseRefName' <<< "$pr_json")" = "$BASE_BRANCH"
-          test "$(jq -r '.headRefName' <<< "$pr_json")" = "$WORKER_BRANCH"
-          test "$(jq -r '.state' <<< "$pr_json")" = "OPEN"
-
-      - name: Finalize structured Worker evidence
-        id: evidence
+      - name: Finalize Worker/Capture evidence
+        id: worker_evidence
         if: always()
         shell: bash
         env:
@@ -1023,7 +907,6 @@ jobs:
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
           WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
-          PR_URL: ${{ steps.pr.outputs.url }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
           FREE_MODE: ${{ inputs.free_mode }}
@@ -1045,24 +928,16 @@ jobs:
           CANDIDATE_ARTIFACT_URL: ${{ steps.candidate_upload.outputs.artifact-url }}
           CANDIDATE_ARTIFACT_DIGEST: ${{ steps.candidate_upload.outputs.artifact-digest }}
           BOUNDED_OUTCOME: ${{ steps.bounded.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
-          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
-          PR_OUTCOME: ${{ steps.pr.outcome }}
-          BOUNDARY_OUTCOME: ${{ steps.boundary.outcome }}
         run: |
           set -euo pipefail
-
           root="${RUNNER_TEMP}/mira-worker"
           mkdir -p "$root"
 
           if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             git status --short > "$root/changed-files.txt" || true
             if test -n "${BASE_SHA:-}" && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
-              git diff --name-status "${BASE_SHA}"...HEAD > "$root/committed-files.txt" || true
-              git diff --stat "${BASE_SHA}"...HEAD > "$root/diff-stat.txt" || true
-            else
-              git diff --name-status > "$root/committed-files.txt" || true
-              git diff --stat > "$root/diff-stat.txt" || true
+              git diff --name-status "$BASE_SHA" > "$root/candidate-files.txt" || true
+              git diff --stat "$BASE_SHA" > "$root/diff-stat.txt" || true
             fi
           fi
 
@@ -1081,10 +956,6 @@ jobs:
               ("candidate_capture", os.getenv("CANDIDATE_OUTCOME")),
               ("candidate_upload", os.getenv("CANDIDATE_UPLOAD_OUTCOME")),
               ("bounded_change", os.getenv("BOUNDED_OUTCOME")),
-              ("trusted_verification", os.getenv("VERIFY_OUTCOME")),
-              ("commit_push", os.getenv("COMMIT_OUTCOME")),
-              ("draft_pr", os.getenv("PR_OUTCOME")),
-              ("draft_pr_boundary", os.getenv("BOUNDARY_OUTCOME")),
           ]
           failed = next((name for name, outcome in stages if outcome == "failure"), "")
           terminal = "failure" if failed else ("success" if all(outcome in {"success", "skipped"} for _, outcome in stages) else "incomplete")
@@ -1094,8 +965,6 @@ jobs:
 
           export RUN_ENDED_AT
           RUN_ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          export COMMIT_SHA
-          COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 
           python3 - <<'PY'
           import json, os
@@ -1110,37 +979,7 @@ jobs:
                       k, v = line.split("=", 1)
                       identity[k.strip()] = v.strip()
 
-          stages = {
-              "validate": os.getenv("VALIDATE_OUTCOME"),
-              "checkout": os.getenv("CHECKOUT_OUTCOME"),
-              "identity": os.getenv("IDENTITY_OUTCOME"),
-              "provider": os.getenv("PROVIDER_OUTCOME"),
-              "policy": os.getenv("POLICY_OUTCOME"),
-              "install": os.getenv("INSTALL_OUTCOME"),
-              "version": os.getenv("VERSION_OUTCOME"),
-              "worker": os.getenv("WORKER_OUTCOME"),
-              "candidate_capture": os.getenv("CANDIDATE_OUTCOME"),
-              "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME"),
-              "bounded_change": os.getenv("BOUNDED_OUTCOME"),
-              "trusted_verification": os.getenv("VERIFY_OUTCOME"),
-              "commit_push": os.getenv("COMMIT_OUTCOME"),
-              "draft_pr": os.getenv("PR_OUTCOME"),
-              "draft_pr_boundary": os.getenv("BOUNDARY_OUTCOME"),
-          }
-
-          session = {}
-          sp = root / "session-summary.json"
-          if sp.exists():
-              try:
-                  session = json.loads(sp.read_text())
-              except Exception:
-                  session = {"available": False, "reason": "invalid_session_summary"}
-
-          candidate = {
-              "state": "unavailable",
-              "recoverable": False,
-              "reason": "capture_not_attempted",
-          }
+          candidate = {"state": "unavailable", "recoverable": False, "reason": "capture_not_attempted"}
           cp = root / "candidate-status.json"
           if cp.exists():
               try:
@@ -1148,11 +987,7 @@ jobs:
                   if isinstance(loaded, dict):
                       candidate = loaded
               except Exception:
-                  candidate = {
-                      "state": "capture_failed",
-                      "recoverable": False,
-                      "reason": "invalid_candidate_status",
-                  }
+                  candidate = {"state": "capture_failed", "recoverable": False, "reason": "invalid_candidate_status"}
 
           candidate["capture_outcome"] = os.getenv("CANDIDATE_OUTCOME")
           candidate["upload_outcome"] = os.getenv("CANDIDATE_UPLOAD_OUTCOME")
@@ -1171,7 +1006,8 @@ jobs:
                   candidate["reason"] = "artifact_upload_failed"
 
           payload = {
-              "schema_version": 1,
+              "schema_version": 2,
+              "job_role": "worker_capture",
               "run_id": identity.get("run_id") or os.getenv("GITHUB_RUN_ID"),
               "run_attempt": identity.get("run_attempt") or os.getenv("GITHUB_RUN_ATTEMPT"),
               "repository": os.getenv("GITHUB_REPOSITORY"),
@@ -1179,7 +1015,6 @@ jobs:
               "base_branch": os.getenv("BASE_BRANCH"),
               "base_sha": os.getenv("BASE_SHA") or identity.get("base_sha"),
               "worker_branch": os.getenv("WORKER_BRANCH") or identity.get("worker_branch"),
-              "opencode_version": identity.get("opencode_version", "1.18.34"),
               "requested_provider": os.getenv("REQUESTED_PROVIDER") or "opencode-go",
               "requested_provider_profile": os.getenv("REQUESTED_PROVIDER_PROFILE") or None,
               "requested_provider_registry_ref": os.getenv("REQUESTED_PROVIDER_REGISTRY_REF") or None,
@@ -1195,48 +1030,577 @@ jobs:
               "ended_at": os.getenv("RUN_ENDED_AT"),
               "terminal_status": os.getenv("TERMINAL_STATUS"),
               "failure_stage": os.getenv("FAILURE_STAGE"),
-              "stages": stages,
-              "session": session,
-              "candidate": candidate,
-              "commit_sha": os.getenv("COMMIT_SHA") if os.getenv("COMMIT_OUTCOME") == "success" else None,
-              "draft_pr_url": os.getenv("PR_URL") or None,
-              "verification": {
-                  "command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000],
-                  "outcome": os.getenv("VERIFY_OUTCOME"),
+              "stages": {
+                  "validate": os.getenv("VALIDATE_OUTCOME"),
+                  "checkout": os.getenv("CHECKOUT_OUTCOME"),
+                  "identity": os.getenv("IDENTITY_OUTCOME"),
+                  "provider": os.getenv("PROVIDER_OUTCOME"),
+                  "policy": os.getenv("POLICY_OUTCOME"),
+                  "install": os.getenv("INSTALL_OUTCOME"),
+                  "version": os.getenv("VERSION_OUTCOME"),
+                  "worker": os.getenv("WORKER_OUTCOME"),
+                  "candidate_capture": os.getenv("CANDIDATE_OUTCOME"),
+                  "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME"),
+                  "bounded_change": os.getenv("BOUNDED_OUTCOME"),
               },
+              "candidate": candidate,
+              "verification": {"command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000], "outcome": "pending_clean_room_verify"},
+              "delivery": {"outcome": "pending_verified_candidate"},
               "artifact_retention_days": 14,
               "safety": {
+                  "github_permissions": {"contents": "read", "issues": "read", "pull_requests": "none"},
+                  "provider_credentials_present": os.getenv("FREE_MODE") != "true",
+                  "github_write_authority": False,
                   "raw_environment_persisted": False,
                   "provider_credentials_persisted": False,
-                  "provider_config_run_scoped": True,
                   "github_token_persisted": False,
-                  "session_content_policy": "metadata-only trajectory; sanitized export removed after extraction",
-                  "worker_output_limit_bytes": 120000,
-                  "verification_output_limit_bytes": 120000,
                   "candidate_tool_commit": identity.get("candidate_tool_commit"),
               },
           }
           (root / "worker-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
           PY
 
-      - name: Upload Worker evidence
+      - name: Upload Worker/Capture evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mira-external-worker-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/mira-worker/worker-run.json
+            ${{ runner.temp }}/mira-worker/identity.txt
+            ${{ runner.temp }}/mira-worker/issue.json
+            ${{ runner.temp }}/mira-worker/maintainer-comments.json
+            ${{ runner.temp }}/mira-worker/provider-route.json
             ${{ runner.temp }}/mira-worker/trajectory.jsonl
             ${{ runner.temp }}/mira-worker/session-summary.json
             ${{ runner.temp }}/mira-worker/worker-output.txt
             ${{ runner.temp }}/mira-worker/worker-output-meta.json
-            ${{ runner.temp }}/mira-worker/verification.log
-            ${{ runner.temp }}/mira-worker/verification-meta.json
             ${{ runner.temp }}/mira-worker/candidate-status.json
             ${{ runner.temp }}/mira-worker/candidate-capture.stdout
             ${{ runner.temp }}/mira-worker/candidate-capture.stderr
             ${{ runner.temp }}/mira-worker/changed-files.txt
-            ${{ runner.temp }}/mira-worker/committed-files.txt
+            ${{ runner.temp }}/mira-worker/candidate-files.txt
             ${{ runner.temp }}/mira-worker/diff-stat.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  verify:
+    needs: worker_capture
+    permissions:
+      contents: read
+      issues: none
+      pull-requests: none
+    runs-on: ubuntu-latest
+    outputs:
+      candidate_patch_sha256: ${{ steps.restore.outputs.patch_sha256 }}
+      candidate_tree_oid: ${{ steps.restore.outputs.tree_oid }}
+      contract_fingerprint: ${{ steps.restore.outputs.contract_fingerprint }}
+      verification_artifact_name: ${{ steps.verify_meta.outputs.artifact_name }}
+
+    steps:
+      - name: Checkout exact Candidate base
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.worker_capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download immutable Candidate
+        id: candidate_download
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          path: ${{ runner.temp }}/mira-verify/candidate
+
+      - name: Load trusted Candidate restore primitive
+        id: candidate_tool
+        shell: bash
+        env:
+          PATH: /usr/bin:/bin
+          BASH_ENV: ''
+          ENV: ''
+          PYTHONPATH: ''
+          PYTHONHOME: ''
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-verify"
+          mkdir -p "$root"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            -o "$root/trusted-candidate.py"
+          test -s "$root/trusted-candidate.py"
+
+      - name: Restore exact Candidate in clean Runner
+        id: restore
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-verify"
+          candidate_dir="$root/candidate"
+
+          python3 "$root/trusted-candidate.py" restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$candidate_dir" \
+            --expected-repository "$EXPECTED_REPOSITORY" \
+            --expected-issue-number "$EXPECTED_ISSUE_NUMBER" \
+            --expected-base-sha "$EXPECTED_BASE_SHA" \
+            --expected-contract-fingerprint "$EXPECTED_CONTRACT_FINGERPRINT" \
+            | tee "$root/restore-result.json"
+
+          patch_sha256="$(jq -r '.candidate_patch_sha256' "$candidate_dir/candidate.json")"
+          tree_oid="$(jq -r '.candidate_tree_oid' "$candidate_dir/candidate.json")"
+          contract_fingerprint="$(jq -r '.contract_fingerprint' "$candidate_dir/candidate.json")"
+          actual_tree_oid="$(git write-tree)"
+
+          test "$patch_sha256" = "$EXPECTED_PATCH_SHA256"
+          test "$tree_oid" = "$EXPECTED_TREE_OID"
+          test "$actual_tree_oid" = "$EXPECTED_TREE_OID"
+          test "$contract_fingerprint" = "$EXPECTED_CONTRACT_FINGERPRINT"
+
+          {
+            echo "patch_sha256=$patch_sha256"
+            echo "tree_oid=$tree_oid"
+            echo "contract_fingerprint=$contract_fingerprint"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check restored Candidate diff
+        id: diff_check
+        if: ${{ steps.restore.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+
+      - name: Run trusted repository verification
+        id: verify_command
+        if: ${{ steps.restore.outcome == 'success' && steps.diff_check.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-verify"
+          test -n "${MIRA_VERIFICATION_COMMAND}"
+
+          set +e
+          {
+            echo "$ ${MIRA_VERIFICATION_COMMAND}"
+            bash -lc "${MIRA_VERIFICATION_COMMAND}"
+          } 2>&1 | tee "$root/verification.raw"
+          verification_rc="${PIPESTATUS[0]}"
+          set -e
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, os
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
+          src = root / "verification.raw"
+          dst = root / "verification.log"
+          limit = 120_000
+          data = src.read_bytes() if src.exists() else b""
+          truncated = len(data) > limit
+          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
+          (root / "verification-meta.json").write_text(json.dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n")
+          PY
+
+          exit "$verification_rc"
+
+      - name: Finalize Verify evidence
+        id: verify_meta
+        if: always()
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          DIFF_CHECK_OUTCOME: ${{ steps.diff_check.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify_command.outcome }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-verify"
+          mkdir -p "$root"
+          artifact_name="mira-external-worker-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          export ARTIFACT_NAME="$artifact_name"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          ok = os.getenv("RESTORE_OUTCOME") == "success" and os.getenv("DIFF_CHECK_OUTCOME") == "success" and os.getenv("VERIFY_OUTCOME") == "success"
+          payload = {
+              "schema_version": 1,
+              "job_role": "verify",
+              "repository": os.getenv("GITHUB_REPOSITORY"),
+              "run_id": os.getenv("GITHUB_RUN_ID"),
+              "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
+              "base_sha": os.getenv("BASE_SHA"),
+              "candidate_patch_sha256": os.getenv("EXPECTED_PATCH_SHA256"),
+              "candidate_tree_oid": os.getenv("EXPECTED_TREE_OID"),
+              "contract_fingerprint": os.getenv("EXPECTED_CONTRACT_FINGERPRINT"),
+              "stages": {
+                  "restore": os.getenv("RESTORE_OUTCOME"),
+                  "diff_check": os.getenv("DIFF_CHECK_OUTCOME"),
+                  "trusted_verification": os.getenv("VERIFY_OUTCOME"),
+              },
+              "terminal_status": "success" if ok else "failure",
+              "verification_artifact": os.getenv("ARTIFACT_NAME"),
+              "github_permissions": {"actions": "read", "contents": "read", "issues": "none", "pull_requests": "none"},
+              "provider_credentials_present": False,
+              "github_mutation_authority": False,
+          }
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
+          (root / "verify-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Upload Verify evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.verify_meta.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/mira-verify/verify-run.json
+            ${{ runner.temp }}/mira-verify/restore-result.json
+            ${{ runner.temp }}/mira-verify/verification.log
+            ${{ runner.temp }}/mira-verify/verification-meta.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require verified Candidate
+        if: always()
+        shell: bash
+        env:
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          DIFF_CHECK_OUTCOME: ${{ steps.diff_check.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify_command.outcome }}
+        run: |
+          set -euo pipefail
+          test "$RESTORE_OUTCOME" = "success"
+          test "$DIFF_CHECK_OUTCOME" = "success"
+          test "$VERIFY_OUTCOME" = "success"
+
+  delivery:
+    needs:
+      - worker_capture
+      - verify
+    permissions:
+      contents: write
+      issues: none
+      pull-requests: write
+    runs-on: ubuntu-latest
+    outputs:
+      pull_request_url: ${{ steps.pr.outputs.url }}
+
+    steps:
+      - name: Checkout exact verified Candidate base
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.worker_capture.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download immutable Candidate
+        id: candidate_download
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          path: ${{ runner.temp }}/mira-delivery/candidate
+
+      - name: Download Worker/Capture handoff
+        id: worker_handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: mira-external-worker-${{ github.run_id }}
+          path: ${{ runner.temp }}/mira-delivery/worker
+
+      - name: Download Verify evidence
+        id: verify_handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.verify.outputs.verification_artifact_name }}
+          path: ${{ runner.temp }}/mira-delivery/verify
+
+      - name: Load trusted Candidate restore primitive
+        id: candidate_tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            -o "$root/trusted-candidate.py"
+          test -s "$root/trusted-candidate.py"
+
+      - name: Restore exact verified Candidate
+        id: restore
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          git switch -c "$WORKER_BRANCH"
+
+          python3 "$root/trusted-candidate.py" restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$EXPECTED_REPOSITORY" \
+            --expected-issue-number "$EXPECTED_ISSUE_NUMBER" \
+            --expected-base-sha "$EXPECTED_BASE_SHA" \
+            --expected-contract-fingerprint "$EXPECTED_CONTRACT_FINGERPRINT" \
+            | tee "$root/restore-result.json"
+
+      - name: Assert verified Candidate identity
+        id: identity
+        shell: bash
+        env:
+          WORKER_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          WORKER_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          VERIFY_PATCH_SHA256: ${{ needs.verify.outputs.candidate_patch_sha256 }}
+          VERIFY_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          VERIFY_CONTRACT_FINGERPRINT: ${{ needs.verify.outputs.contract_fingerprint }}
+          EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          manifest="$root/candidate/candidate.json"
+          verify_run="$root/verify/verify-run.json"
+
+          manifest_patch="$(jq -r '.candidate_patch_sha256' "$manifest")"
+          manifest_tree="$(jq -r '.candidate_tree_oid' "$manifest")"
+          manifest_contract="$(jq -r '.contract_fingerprint' "$manifest")"
+          restored_tree="$(git write-tree)"
+          verify_status="$(jq -r '.terminal_status' "$verify_run")"
+          verify_evidence_patch="$(jq -r '.candidate_patch_sha256' "$verify_run")"
+          verify_evidence_tree="$(jq -r '.candidate_tree_oid' "$verify_run")"
+
+          test "$verify_status" = "success"
+          test "$manifest_patch" = "$WORKER_PATCH_SHA256"
+          test "$manifest_patch" = "$VERIFY_PATCH_SHA256"
+          test "$manifest_patch" = "$verify_evidence_patch"
+          test "$manifest_tree" = "$WORKER_TREE_OID"
+          test "$manifest_tree" = "$VERIFY_TREE_OID"
+          test "$manifest_tree" = "$verify_evidence_tree"
+          test "$restored_tree" = "$manifest_tree"
+          test "$manifest_contract" = "$EXPECTED_CONTRACT_FINGERPRINT"
+          test "$manifest_contract" = "$VERIFY_CONTRACT_FINGERPRINT"
+
+          {
+            echo "patch_sha256=$manifest_patch"
+            echo "tree_oid=$manifest_tree"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push exact verified Candidate
+        id: commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          EXPECTED_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+        run: |
+          set -euo pipefail
+          git config user.name "mira-agent-worker[bot]"
+          git config user.email "mira-agent-worker[bot]@users.noreply.github.com"
+          git commit -m "agent: implement issue #${ISSUE_NUMBER}"
+
+          commit_tree_oid="$(git rev-parse HEAD^{tree})"
+          test "$commit_tree_oid" = "$EXPECTED_TREE_OID"
+
+          gh auth setup-git
+          git push --set-upstream origin "HEAD:${WORKER_BRANCH}"
+
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "commit_tree_oid=$commit_tree_oid" >> "$GITHUB_OUTPUT"
+
+      - name: Create Draft PR with durable handoff
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          PROVIDER: ${{ needs.worker_capture.outputs.provider }}
+          PROVIDER_PROFILE: ${{ needs.worker_capture.outputs.provider_profile }}
+          PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
+          MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
+          OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          CANDIDATE_PATCH_SHA256: ${{ needs.verify.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          export ISSUE_TITLE
+          ISSUE_TITLE="$(jq -r '.title' "$root/worker/issue.json" | cut -c1-220)"
+
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-delivery"
+          worker_output = (root / "worker" / "worker-output.txt").read_text(errors="replace")[:12000]
+          verification_output = (root / "verify" / "verification.log").read_text(errors="replace")[:12000]
+
+          body = f"""## Mira external Worker handoff
+
+          - Work item: #{os.environ["ISSUE_NUMBER"]} — {os.environ["ISSUE_TITLE"]}
+          - Delivery base: `{os.environ["BASE_BRANCH"]}`
+          - Base SHA: `{os.environ["BASE_SHA"]}`
+          - Worker branch: `{os.environ["WORKER_BRANCH"]}`
+          - Worker harness: OpenCode CLI {os.environ["OPENCODE_VERSION"]}
+          - Provider: `{os.environ["PROVIDER"]}`
+          - Provider profile: `{os.environ["PROVIDER_PROFILE"] or "builtin"}`
+          - Provider registry revision: `{os.environ["PROVIDER_REGISTRY_REF"]}`
+          - Model route: `{os.environ["MODEL_ROUTE"]}`
+          - Candidate patch: `{os.environ["CANDIDATE_PATCH_SHA256"]}`
+          - Candidate tree: `{os.environ["CANDIDATE_TREE_OID"]}`
+          - Verification: PASS (clean Runner)
+          - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
+
+          This PR is intentionally **Draft**. Worker execution and Delivery do not grant merge, Issue acceptance/closure, environment promotion, release, or deployment authority.
+
+          <details>
+          <summary>Worker handoff</summary>
+
+          <pre>
+          {worker_output}
+          </pre>
+          </details>
+
+          <details>
+          <summary>Clean-room verification output</summary>
+
+          <pre>
+          {verification_output}
+          </pre>
+          </details>
+          """
+          (root / "pr-body.md").write_text(body)
+          PY
+
+          pr_url="$(gh pr create \
+            --draft \
+            --base "$BASE_BRANCH" \
+            --head "$WORKER_BRANCH" \
+            --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}" \
+            --body-file "$root/pr-body.md")"
+
+          test -n "$pr_url"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Draft PR and exact Candidate delivery boundary
+        id: boundary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          EXPECTED_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          pr_json="$(gh pr view "$PR_URL" --json isDraft,baseRefName,headRefName,state,headRefOid)"
+          test "$(jq -r '.isDraft' <<< "$pr_json")" = "true"
+          test "$(jq -r '.baseRefName' <<< "$pr_json")" = "$BASE_BRANCH"
+          test "$(jq -r '.headRefName' <<< "$pr_json")" = "$WORKER_BRANCH"
+          test "$(jq -r '.state' <<< "$pr_json")" = "OPEN"
+          test "$(jq -r '.headRefOid' <<< "$pr_json")" = "$COMMIT_SHA"
+          test "$(git show -s --format=%T "$COMMIT_SHA")" = "$EXPECTED_TREE_OID"
+
+      - name: Finalize Delivery evidence
+        id: delivery_evidence
+        if: always()
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          PR_OUTCOME: ${{ steps.pr.outcome }}
+          BOUNDARY_OUTCOME: ${{ steps.boundary.outcome }}
+          COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          mkdir -p "$root"
+          artifact_name="mira-external-worker-delivery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          stages = {
+              "restore": os.getenv("RESTORE_OUTCOME"),
+              "verified_identity": os.getenv("IDENTITY_OUTCOME"),
+              "commit_push": os.getenv("COMMIT_OUTCOME"),
+              "draft_pr": os.getenv("PR_OUTCOME"),
+              "draft_pr_boundary": os.getenv("BOUNDARY_OUTCOME"),
+          }
+          failed = next((k for k, v in stages.items() if v == "failure"), None)
+          ok = not failed and all(v in {"success", "skipped"} for v in stages.values())
+          payload = {
+              "schema_version": 1,
+              "job_role": "delivery",
+              "repository": os.getenv("GITHUB_REPOSITORY"),
+              "run_id": os.getenv("GITHUB_RUN_ID"),
+              "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
+              "base_sha": os.getenv("BASE_SHA"),
+              "worker_branch": os.getenv("WORKER_BRANCH"),
+              "candidate_patch_sha256": os.getenv("CANDIDATE_PATCH_SHA256"),
+              "candidate_tree_oid": os.getenv("CANDIDATE_TREE_OID"),
+              "stages": stages,
+              "terminal_status": "success" if ok else "failure",
+              "failure_stage": failed or "none",
+              "commit_sha": os.getenv("COMMIT_SHA") or None,
+              "draft_pr_url": os.getenv("PR_URL") or None,
+              "github_permissions": {"actions": "none", "contents": "write", "issues": "none", "pull_requests": "write"},
+              "provider_credentials_present": False,
+              "authority": {
+                  "push_worker_branch": True,
+                  "create_draft_pr": True,
+                  "merge": False,
+                  "issue_outcome": False,
+                  "release": False,
+                  "deploy": False,
+              },
+          }
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-delivery"
+          (root / "delivery-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Upload Delivery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.delivery_evidence.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/mira-delivery/delivery-run.json
+            ${{ runner.temp }}/mira-delivery/restore-result.json
           if-no-files-found: warn
           retention-days: 14

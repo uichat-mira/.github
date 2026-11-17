@@ -1,6 +1,6 @@
 # External Worker Candidate Contract
 
-Status: active implementation contract. AGT-056 established the primitive; AGT-057 integrates it into the reusable External Worker.
+Status: active implementation contract. AGT-056 established the primitive, AGT-057 made Candidate durable on controllable failure paths, and AGT-058 separates clean-room Verify from least-privilege Delivery.
 
 A Candidate is the durable, recoverable code state produced by one External Worker attempt before trusted verification and GitHub delivery. It is **not** a pull request, acceptance decision, verification result, or second task ledger.
 
@@ -127,21 +127,46 @@ A Candidate may exist when the Worker failed, was blocked, or has not been indep
 
 ## Production Worker integration
 
-The reusable External Worker now treats Candidate capture as a trusted post-Worker stage that runs **before** bounded-change validation, trusted repository verification, commit/push, and Draft PR creation.
+The canonical reusable External Worker is split into three real GitHub Actions jobs with separate runners and permission scopes:
 
-After model execution has ended, the trusted Capture step downloads the Candidate implementation from the public immutable AGT-056 commit `c5d93e149765f9068f3d342d2aed3a40a8f20efc` into `RUNNER_TEMP` without a GitHub credential. Its PATH is reset to the system Git/Python/cURL locations for the capture step. The model does not have the trusted Candidate file present while it is running, and Candidate capture does not receive GitHub write credentials.
+1. **Worker/Capture**
+   - runs the model and edits the ephemeral workspace;
+   - freezes and uploads the Candidate before trusted verification;
+   - has `contents: read`, `issues: read`, and no pull-request write permission;
+   - is the only job that may receive provider credentials.
+2. **Verify**
+   - starts on a fresh GitHub-hosted runner;
+   - checks out the exact Candidate `base_sha`;
+   - downloads the immutable Candidate Artifact;
+   - restores it with the pinned AGT-056 Candidate primitive and verifies patch digest / reconstructed tree identity;
+   - runs the caller-owned verification command only after restore succeeds;
+   - has only `contents: read`; same-run Candidate Artifact transfer uses the Actions artifact runtime without granting REST `actions` permission, and no provider credential is present.
+3. **Delivery**
+   - starts on another fresh runner only after Verify succeeds;
+   - checks out the same exact `base_sha`, downloads the same Candidate and Verify evidence, restores again, and mechanically rechecks patch/tree identity;
+   - commits only the restored verified tree;
+   - asserts the resulting commit tree equals the verified Candidate tree;
+   - is the only job with `contents: write` and `pull-requests: write`; it has no Issue permission and uses those writes solely for pushing the isolated Worker branch and opening the Draft PR.
 
-Current AGT-057 behavior:
+The Candidate implementation is still pinned to immutable AGT-056 commit `c5d93e149765f9068f3d342d2aed3a40a8f20efc`. A successful Verify or Delivery restore means the exact frozen code state was reproduced; it never grants merge, Issue outcome, release, deployment, or promotion authority.
 
-- Worker success with effective workspace changes → capture Candidate, upload immutable Candidate Artifact, then continue the existing verification/delivery chain;
-- Worker/provider non-zero failure after producing changes → the later trusted capture step still runs via `always()` and attempts to persist the Candidate;
-- trusted verification failure happens **after** Candidate upload, so the Candidate remains available for diagnosis/recovery;
-- no effective workspace changes → no Candidate is manufactured; status is `unavailable/no_changes`;
-- Candidate contract/safety rejection → status is `rejected` and the run remains non-recoverable;
-- Candidate Artifact upload failure → status is `upload_failed`, `recoverable=false`; diagnostic evidence must not claim otherwise.
+The current Candidate Artifact retention remains 14 days. This is a bounded recovery window, not permanent storage.
 
-The current Candidate Artifact retention is 14 days, matching the diagnostic evidence window. Longer-lived recovery storage is deliberately not claimed by AGT-057.
+The current `contract_fingerprint` remains the AGT-057 transitional deterministic fingerprint over the validated Issue title/body plus trusted-maintainer comment snapshot. Canonical cross-run contract compatibility belongs to AGT-059.
 
-AGT-057 uses a transitional deterministic SHA-256 fingerprint over the validated Issue title/body plus the trusted-maintainer comment snapshot only to bind the run-local Candidate manifest. Canonical contract-amendment fingerprint semantics for cross-run Recovery belong to AGT-059; consumers must not treat the AGT-057 transitional fingerprint as an authorization or compatibility decision.
+### Failure semantics after AGT-058
 
-This integration does not solve hard runner loss, force cancellation, guaranteed cleanup after platform termination, or hostile same-Runner process isolation. The Capture code and credential scope are workflow-owned, but AGT-057 still reads the mutable workspace on the Worker Runner; it must not be described as a sandbox boundary against a malicious process with arbitrary shell access. AGT-058 moves verification and delivery to clean Runner boundaries. AGT-057 improves recoverability for normal completion and controllable failure paths where the trusted capture/upload stages still execute.
+- Worker/provider failure after edits can still leave a recoverable Candidate Artifact.
+- Candidate capture/upload failure remains non-recoverable and explicit.
+- Verify restore/digest/tree failure stops before Delivery and therefore produces no Git push or Draft PR.
+- Repository verification failure leaves the Candidate and Verify evidence intact and produces no Delivery.
+- Delivery failure occurs after a verified Candidate exists; retrying Delivery does not require re-running the model.
+- Hard runner loss, force cancellation, platform termination, and hostile same-runner compromise remain outside the guarantee.
+
+### Caller compatibility and rollout boundary
+
+The reusable workflow input/output contract remains compatible: existing callers still pass `issue_number`, `base_branch`, `verification_command`, timeout, provider/model routing and provider secrets, and still receive Worker branch / Draft PR outputs.
+
+Mira product repositories currently pin immutable historical workflow SHAs. Merging AGT-058 into `uichat-mira/.github@main` therefore does **not** silently switch Desktop, Mobile, Relay, or other callers to the split-job engine. Each caller must deliberately repin to an accepted AGT-058 engine SHA.
+
+The Organization free-worker wrapper also remains pinned to its existing historical engine until an explicit reviewed repin. Free/paid model routing semantics are therefore preserved during AGT-058 implementation rather than silently migrated.
