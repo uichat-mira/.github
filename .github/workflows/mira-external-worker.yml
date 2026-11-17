@@ -57,8 +57,8 @@ on:
         description: Isolated worker branch name reserved from the explicit base
         value: ${{ jobs.worker_capture.outputs.worker_branch }}
       pull_request_url:
-        description: Draft pull request URL when verified Delivery succeeds
-        value: ${{ jobs.delivery.outputs.pull_request_url }}
+        description: Draft pull request URL from current Delivery or an already delivered Candidate
+        value: ${{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}
 
 permissions:
   contents: read
@@ -76,6 +76,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       worker_branch: ${{ steps.handoff.outputs.worker_branch }}
+      pull_request_url: ${{ steps.handoff.outputs.pull_request_url }}
       base_sha: ${{ steps.identity.outputs.base_sha }}
       candidate_base_sha: ${{ steps.handoff.outputs.candidate_base_sha }}
       candidate_origin_run_id: ${{ steps.handoff.outputs.candidate_origin_run_id }}
@@ -232,7 +233,7 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/1e677775e2ce3aed57c3aca2ab6a95bbfa4b72b5/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/uichat-mira/.github/1177ab66f46f2d66c212118c56b46cdceb135590/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
@@ -1338,7 +1339,34 @@ jobs:
           echo "contract_fingerprint=${CONTRACT_FINGERPRINT:-}" >> "$GITHUB_OUTPUT"
           echo "ambiguity_guard=${AMBIGUITY_GUARD:-}" >> "$GITHUB_OUTPUT"
 
-          if test "$mode" = "delivery_retry_only"; then
+          if test "$mode" = "delivery_complete"; then
+            pointer="$root/recovery/pointer.json"
+            test -s "$pointer"
+            {
+              echo "candidate_base_sha=$(jq -r '.base_sha' "$pointer")"
+              echo "candidate_origin_run_id=$(jq -r '.candidate_origin_run_id' "$pointer")"
+              echo "candidate_origin_run_attempt=$(jq -r '.candidate_origin_run_attempt' "$pointer")"
+              echo "candidate_base_branch=$(jq -r '.base_branch' "$pointer")"
+              echo "worker_branch=$(jq -r '.worker_branch' "$pointer")"
+              echo "pull_request_url=$(jq -r '.draft_pr_url' "$pointer")"
+              echo "candidate_artifact_name=$(jq -r '.candidate_artifact_name' "$pointer")"
+              echo "candidate_artifact_id=$(jq -r '.candidate_artifact_id' "$pointer")"
+              echo "candidate_artifact_digest=$(jq -r '.candidate_artifact_digest' "$pointer")"
+              echo "candidate_patch_sha256=$(jq -r '.candidate_patch_sha256' "$pointer")"
+              echo "candidate_tree_oid=$(jq -r '.candidate_tree_oid' "$pointer")"
+              echo "contract_fingerprint=$(jq -r '.contract_fingerprint' "$pointer")"
+              echo "ambiguity_guard=$(jq -r '.ambiguity_guard' "$pointer")"
+              echo "verification_artifact_name=$(jq -r '.verification_artifact_name' "$pointer")"
+              echo "verified_patch_sha256=$(jq -r '.candidate_patch_sha256' "$pointer")"
+              echo "verified_tree_oid=$(jq -r '.candidate_tree_oid' "$pointer")"
+              echo "verified_contract_fingerprint=$(jq -r '.contract_fingerprint' "$pointer")"
+              echo "provider=$(jq -r '.provider // ""' "$pointer")"
+              echo "provider_profile=$(jq -r '.provider_profile // ""' "$pointer")"
+              echo "provider_registry_ref=$(jq -r '.provider_registry_ref // ""' "$pointer")"
+              echo "model_route=$(jq -r '.model_route // ""' "$pointer")"
+              echo "model=$(jq -r '.model // ""' "$pointer")"
+            } >> "$GITHUB_OUTPUT"
+          elif test "$mode" = "delivery_retry_only"; then
             manifest="$root/recovery/candidate/candidate.json"
             verify_run="$root/recovery/verify/verify-run.json"
             test -s "$manifest"
@@ -1396,6 +1424,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           else
             {
+              echo "pull_request_url="
               echo "candidate_base_sha=${CURRENT_BASE_SHA:-}"
               echo "candidate_origin_run_id=${GITHUB_RUN_ID}"
               echo "candidate_origin_run_attempt=${GITHUB_RUN_ATTEMPT}"
@@ -1452,6 +1481,8 @@ jobs:
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
           CANDIDATE_UPLOAD_OUTCOME: ${{ steps.candidate_upload.outcome }}
+          RECOVERED_CANDIDATE_UPLOAD_OUTCOME: ${{ steps.recovered_candidate_upload.outcome }}
+          RECOVERED_VERIFY_UPLOAD_OUTCOME: ${{ steps.recovered_verify_upload.outcome }}
           RECOVERY_MODE: ${{ steps.handoff.outputs.recovery_mode }}
           RECOVERY_SOURCE_RUN_ID: ${{ steps.handoff.outputs.recovery_source_run_id }}
           RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
@@ -1477,6 +1508,15 @@ jobs:
             fi
           fi
 
+          candidate_upload_outcome="${CANDIDATE_UPLOAD_OUTCOME:-}"
+          verify_evidence_republish_outcome="skipped"
+          if test "${RECOVERY_MODE:-}" = "delivery_retry_only"; then
+            candidate_upload_outcome="${RECOVERED_CANDIDATE_UPLOAD_OUTCOME:-}"
+            verify_evidence_republish_outcome="${RECOVERED_VERIFY_UPLOAD_OUTCOME:-}"
+          fi
+          export CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE="$candidate_upload_outcome"
+          export VERIFY_EVIDENCE_REPUBLISH_OUTCOME="$verify_evidence_republish_outcome"
+
           export TERMINAL_STATUS FAILURE_STAGE
           read -r TERMINAL_STATUS FAILURE_STAGE < <(python3 - <<'PY'
           import os
@@ -1492,7 +1532,8 @@ jobs:
               ("version", os.getenv("VERSION_OUTCOME")),
               ("worker", os.getenv("WORKER_OUTCOME")),
               ("candidate_capture", os.getenv("CANDIDATE_OUTCOME")),
-              ("candidate_upload", os.getenv("CANDIDATE_UPLOAD_OUTCOME")),
+              ("candidate_upload", os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE")),
+              ("verify_evidence_republish", os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME")),
               ("bounded_change", os.getenv("BOUNDED_OUTCOME")),
           ]
           failed = next((name for name, outcome in stages if outcome == "failure"), "")
@@ -1541,7 +1582,8 @@ jobs:
                   recovery["reason"] = "invalid_recovery_state"
 
           candidate["capture_outcome"] = os.getenv("CANDIDATE_OUTCOME")
-          candidate["upload_outcome"] = os.getenv("CANDIDATE_UPLOAD_OUTCOME")
+          candidate["upload_outcome"] = os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE")
+          candidate["verification_evidence_republish_outcome"] = os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME")
           candidate["artifact_name"] = os.getenv("CANDIDATE_ARTIFACT_NAME") or None
           candidate["artifact_id"] = os.getenv("CANDIDATE_ARTIFACT_ID") or None
           candidate["artifact_digest"] = os.getenv("CANDIDATE_ARTIFACT_DIGEST") or None
@@ -1550,11 +1592,23 @@ jobs:
           candidate["contract_fingerprint"] = os.getenv("CONTRACT_FINGERPRINT") or None
           candidate["ambiguity_guard"] = os.getenv("AMBIGUITY_GUARD") or None
           candidate["artifact_retention_days"] = 14
-          if recovery.get("mode") == "delivery_retry_only":
+          if recovery.get("mode") == "delivery_complete":
               candidate["state"] = "captured"
-              candidate["recoverable"] = True
-              candidate["reason"] = "verified_candidate_republished_for_delivery_retry"
-          if candidate.get("state") == "captured" and recovery.get("mode") != "delivery_retry_only":
+              candidate["recoverable"] = False
+              candidate["reason"] = "prior_candidate_already_delivered"
+          if recovery.get("mode") == "delivery_retry_only":
+              if (
+                  os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE") == "success"
+                  and os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME") == "success"
+              ):
+                  candidate["state"] = "captured"
+                  candidate["recoverable"] = True
+                  candidate["reason"] = "verified_candidate_republished_for_delivery_retry"
+              else:
+                  candidate["state"] = "upload_failed"
+                  candidate["recoverable"] = False
+                  candidate["reason"] = "recovery_artifact_republication_failed"
+          if candidate.get("state") == "captured" and recovery.get("mode") not in {"delivery_retry_only", "delivery_complete"}:
               if os.getenv("CANDIDATE_UPLOAD_OUTCOME") == "success":
                   candidate["recoverable"] = True
                   candidate["reason"] = None
@@ -1602,7 +1656,8 @@ jobs:
                   "version": os.getenv("VERSION_OUTCOME"),
                   "worker": os.getenv("WORKER_OUTCOME"),
                   "candidate_capture": os.getenv("CANDIDATE_OUTCOME"),
-                  "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME"),
+                  "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME_EFFECTIVE"),
+                  "verify_evidence_republish": os.getenv("VERIFY_EVIDENCE_REPUBLISH_OUTCOME"),
                   "bounded_change": os.getenv("BOUNDED_OUTCOME"),
               },
               "recovery": recovery,
@@ -2247,7 +2302,7 @@ jobs:
       - worker_capture
       - verify
       - delivery
-    if: ${{ always() && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' }}
+    if: ${{ always() && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' }}
     permissions:
       contents: none
       issues: write
