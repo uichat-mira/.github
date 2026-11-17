@@ -217,9 +217,10 @@ def discover(args: argparse.Namespace) -> int:
 
     pointers.sort(
         key=lambda x: (
-            x.get("run_id") or 0,
-            x.get("run_attempt") or 0,
-            x.get("_comment_id") or 0,
+            x.get("_comment_created_at") or "",
+            as_int("pointer run id", x.get("run_id")),
+            as_int("pointer run attempt", x.get("run_attempt")),
+            as_int("pointer comment id", x.get("_comment_id")),
         ),
         reverse=True,
     )
@@ -277,8 +278,14 @@ def validate_delivery_evidence(
     require_equal("delivery run id", as_int("delivery run id", delivery.get("run_id")), as_int("pointer run id", pointer.get("run_id")))
     require_equal("delivery run attempt", as_int("delivery run attempt", delivery.get("run_attempt")), as_int("pointer run attempt", pointer.get("run_attempt")))
     require_equal("delivery base SHA", delivery.get("base_sha"), manifest.get("base_sha"))
+    require_equal("delivery worker branch", delivery.get("worker_branch"), pointer.get("worker_branch"))
     require_equal("delivery patch digest", delivery.get("candidate_patch_sha256"), manifest.get("candidate_patch_sha256"))
     require_equal("delivery tree", delivery.get("candidate_tree_oid"), manifest.get("candidate_tree_oid"))
+    require_equal(
+        "delivery Draft PR URL",
+        delivery.get("draft_pr_url") or None,
+        pointer.get("draft_pr_url") or None,
+    )
     status = delivery.get("terminal_status")
     if status not in {"success", "failure"}:
         raise RecoveryError("delivery terminal status is invalid")
