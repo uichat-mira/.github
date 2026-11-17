@@ -120,6 +120,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Download uploaded failed-Worker Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: agt-057-failed-worker-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/agt-057/downloaded-candidate
+
       - name: Simulate trusted verification failure after Candidate upload
         id: verification_failure
         continue-on-error: true
@@ -136,7 +142,7 @@ jobs:
           git -C "$restore" checkout -q "$FIXTURE_BASE_SHA"
           python3 .github/scripts/worker-candidate/candidate.py restore \
             --repo "$restore" \
-            --candidate-dir "${FIXTURE_ROOT}/candidate" \
+            --candidate-dir "${FIXTURE_ROOT}/downloaded-candidate" \
             --expected-repository "uichat-mira/candidate-fixture" \
             --expected-issue-number 57 \
             --expected-base-sha "$FIXTURE_BASE_SHA" \
