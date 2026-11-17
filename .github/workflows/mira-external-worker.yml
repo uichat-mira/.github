@@ -1297,7 +1297,7 @@ jobs:
       - verify
     permissions:
       contents: write
-      issues: read
+      issues: none
       pull-requests: write
     runs-on: ubuntu-latest
     outputs:
@@ -1579,7 +1579,7 @@ jobs:
               "failure_stage": failed or "none",
               "commit_sha": os.getenv("COMMIT_SHA") or None,
               "draft_pr_url": os.getenv("PR_URL") or None,
-              "github_permissions": {"actions": "none", "contents": "write", "issues": "read", "pull_requests": "write"},
+              "github_permissions": {"actions": "none", "contents": "write", "issues": "none", "pull_requests": "write"},
               "provider_credentials_present": False,
               "authority": {
                   "push_worker_branch": True,
