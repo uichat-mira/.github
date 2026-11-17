@@ -1,0 +1,216 @@
+name: AGT-059 Live Recovery Probe
+
+on:
+  push:
+    branches:
+      - feat/agt-059-candidate-recovery
+    paths:
+      - .github/workflows/agt-059-live-recovery-probe.yml
+
+permissions: {}
+
+jobs:
+  phase-a-publish-recoverable-candidate:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout AGT-059 implementation
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build current Issue contract
+        id: contract
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: 73
+          VERIFICATION_COMMAND: test -f agt-059-live-probe.txt
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-059-live-probe"
+          mkdir -p "$root"
+
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}" > "$root/issue.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" > "$root/comment-pages.json"
+          jq '[.[][]]' "$root/comment-pages.json" > "$root/comments.json"
+          : > "$root/trusted-logins.txt"
+
+          while IFS= read -r login; do
+            test -n "$login" || continue
+            user_type="$(jq -r --arg login "$login" '[.[] | select(.user.login == $login) | .user.type][0] // ""' "$root/comments.json")"
+            test "$user_type" != "Bot" || continue
+            if permission_json="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${login}/permission" 2>/dev/null)"; then
+              permission="$(jq -r '.permission // ""' <<< "$permission_json")"
+            else
+              continue
+            fi
+            case "$permission" in
+              admin|maintain|write) printf '%s\n' "$login" >> "$root/trusted-logins.txt" ;;
+            esac
+          done < <(jq -r '.[].user.login' "$root/comments.json" | sort -u)
+
+          jq --rawfile trusted "$root/trusted-logins.txt" '
+            ($trusted | split("\n") | map(select(length > 0))) as $trusted_logins
+            | [
+                .[]
+                | select(.user.type != "Bot")
+                | select(.user.login as $login | ($trusted_logins | index($login)) != null)
+                | {
+                    id,
+                    author: .user.login,
+                    created_at,
+                    updated_at,
+                    body: (.body // "")
+                  }
+              ]
+            | sort_by(.created_at, .id)
+          ' "$root/comments.json" > "$root/trusted-comments.json"
+
+          python3 .github/scripts/worker-candidate/recovery.py fingerprint \
+            --issue-json "$root/issue.json" \
+            --comments-json "$root/trusted-comments.json" \
+            --base-branch main \
+            --verification-command "$VERIFICATION_COMMAND" \
+            --output "$root/contract.json"
+
+          echo "fingerprint=$(jq -r '.fingerprint' "$root/contract.json")" >> "$GITHUB_OUTPUT"
+          echo "ambiguity_guard=$(jq -r '.ambiguity_guard' "$root/contract.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Capture live probe Candidate from exact main base
+        id: candidate
+        shell: bash
+        env:
+          ISSUE_NUMBER: 73
+          CONTRACT_FINGERPRINT: ${{ steps.contract.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-059-live-probe"
+          candidate_dir="$root/candidate"
+          worktree="$root/base"
+          git fetch --no-tags origin main
+          base_sha="$(git rev-parse origin/main)"
+          git worktree add --detach "$worktree" "$base_sha"
+
+          printf 'AGT-059 live recovery probe\n' > "$worktree/agt-059-live-probe.txt"
+
+          python3 "$GITHUB_WORKSPACE/.github/scripts/worker-candidate/candidate.py" capture \
+            --repo "$worktree" \
+            --output "$candidate_dir" \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number "$ISSUE_NUMBER" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --base-branch main \
+            --base-sha "$base_sha" \
+            --contract-fingerprint "$CONTRACT_FINGERPRINT" \
+            --worker-outcome failure \
+            --provider agt-059-live-probe \
+            --model none
+
+          artifact_name="agt-059-live-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "artifact_name=$artifact_name"
+            echo "base_sha=$base_sha"
+            echo "patch_sha256=$(jq -r '.candidate_patch_sha256' "$candidate_dir/candidate.json")"
+            echo "tree_oid=$(jq -r '.candidate_tree_oid' "$candidate_dir/candidate.json")"
+          } >> "$GITHUB_OUTPUT"
+
+          git worktree remove --force "$worktree"
+
+      - name: Upload live probe Candidate
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.candidate.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/agt-059-live-probe/candidate/candidate.patch
+            ${{ runner.temp }}/agt-059-live-probe/candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Publish temporary Recovery pointer on Issue 73
+        id: pointer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: 73
+          BASE_SHA: ${{ steps.candidate.outputs.base_sha }}
+          CANDIDATE_ARTIFACT_NAME: ${{ steps.candidate.outputs.artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          CANDIDATE_PATCH_SHA256: ${{ steps.candidate.outputs.patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ steps.candidate.outputs.tree_oid }}
+          CONTRACT_FINGERPRINT: ${{ steps.contract.outputs.fingerprint }}
+          AMBIGUITY_GUARD: ${{ steps.contract.outputs.ambiguity_guard }}
+        run: |
+          set -euo pipefail
+
+          pointer="$(jq -cn \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson issue "$ISSUE_NUMBER" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg base_sha "$BASE_SHA" \
+            --arg artifact_name "$CANDIDATE_ARTIFACT_NAME" \
+            --arg artifact_id "$CANDIDATE_ARTIFACT_ID" \
+            --arg artifact_digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --arg patch "$CANDIDATE_PATCH_SHA256" \
+            --arg tree "$CANDIDATE_TREE_OID" \
+            --arg fingerprint "$CONTRACT_FINGERPRINT" \
+            --arg guard "$AMBIGUITY_GUARD" \
+            '{
+              schema_version: 1,
+              repository: $repository,
+              issue_number: $issue,
+              run_id: ($run_id | tonumber),
+              run_attempt: ($run_attempt | tonumber),
+              recovery_mode: "fresh",
+              recovery_source_run_id: null,
+              base_sha: $base_sha,
+              base_branch: "main",
+              worker_branch: ("feat/worker-" + ($issue|tostring) + "-" + $run_id + "-" + $run_attempt),
+              candidate_origin_run_id: ($run_id | tonumber),
+              candidate_origin_run_attempt: ($run_attempt | tonumber),
+              candidate_artifact_name: $artifact_name,
+              candidate_artifact_id: $artifact_id,
+              candidate_artifact_digest: $artifact_digest,
+              candidate_patch_sha256: $patch,
+              candidate_tree_oid: $tree,
+              contract_fingerprint: $fingerprint,
+              ambiguity_guard: $guard,
+              provider: "agt-059-live-probe",
+              provider_profile: "",
+              provider_registry_ref: "",
+              model_route: "agt-059-live-probe/none",
+              model: "none",
+              verification_state: "skipped",
+              verification_artifact_name: "",
+              delivery_state: "skipped",
+              delivery_artifact_name: "",
+              draft_pr_url: ""
+            }')"
+
+          body="$(cat <<EOF
+          <!-- mira-recovery-candidate:v1
+          $pointer
+          -->
+          AGT-059 temporary live Recovery probe A. This pointer will be removed after Run B.
+          EOF
+          )"
+
+          response="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" -f body="$body")"
+          echo "comment_id=$(jq -r '.id' <<< "$response")" >> "$GITHUB_OUTPUT"
+          echo "::notice::Published live probe pointer comment $(jq -r '.id' <<< "$response")."
+
+      - name: Intentional Run A failure after durable Candidate and pointer
+        shell: bash
+        run: |
+          echo "::error::Intentional AGT-059 probe failure after Candidate upload and Recovery pointer publication."
+          exit 1
