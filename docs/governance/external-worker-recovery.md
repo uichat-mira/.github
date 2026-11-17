@@ -18,7 +18,7 @@ The pointer is an index only. It records the pointer run and Candidate-origin ru
 
 Only pointers authored by `github-actions[bot]` are trusted. User-authored comments that imitate the marker are ignored.
 
-The latest pointer is selected by the GitHub comment's publication time, with run ID/attempt and comment ID as deterministic tie-breakers. A rerun of an older Actions run can therefore supersede a pointer from a newer run ID when it was actually published later.
+The latest Candidate is selected by Candidate-origin run ID and attempt, with the pointer run ID/attempt and comment ID as deterministic tie-breakers. A delayed Delivery-only retry for an older Candidate therefore cannot replace a newer Candidate merely because its comment was published later. If the newest bot-authored Recovery marker is malformed, discovery fails closed instead of treating the Issue as fresh or falling back to stale work.
 
 Keeping the pointer on the original Issue is deliberate: if an Actions Artifact later expires, a subsequent run can distinguish “historical Candidate existed but is no longer recoverable” from “no prior Candidate ever existed.”
 
