@@ -190,6 +190,7 @@ def main() -> None:
             "candidate_origin_run_id": 101,
             "candidate_origin_run_attempt": 1,
             "base_branch": manifest["base_branch"],
+            "worker_branch": "feat/worker-59-101-1",
             "base_sha": manifest["base_sha"],
             "contract_fingerprint": fp1["fingerprint"],
             "ambiguity_guard": fp1["ambiguity_guard"],
