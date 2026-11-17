@@ -81,6 +81,7 @@ jobs:
       candidate_origin_run_id: ${{ steps.handoff.outputs.candidate_origin_run_id }}
       candidate_origin_run_attempt: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
       candidate_base_branch: ${{ steps.handoff.outputs.candidate_base_branch }}
+      model: ${{ steps.handoff.outputs.model }}
       recovery_mode: ${{ steps.handoff.outputs.recovery_mode }}
       recovery_source_run_id: ${{ steps.handoff.outputs.recovery_source_run_id }}
       candidate_artifact_name: ${{ steps.handoff.outputs.candidate_artifact_name }}
@@ -1321,6 +1322,7 @@ jobs:
           NORMAL_PATCH: ${{ steps.candidate.outputs.patch_sha256 }}
           NORMAL_TREE: ${{ steps.candidate.outputs.tree_oid }}
           NORMAL_PROVIDER: ${{ steps.provider.outputs.provider }}
+          NORMAL_MODEL: ${{ steps.provider.outputs.model }}
           NORMAL_PROVIDER_PROFILE: ${{ steps.provider.outputs.provider_profile }}
           NORMAL_PROVIDER_REGISTRY_REF: ${{ steps.provider.outputs.provider_registry_ref }}
           NORMAL_MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
@@ -1386,6 +1388,7 @@ jobs:
               echo "provider_profile=$provider_profile"
               echo "provider_registry_ref=$provider_registry_ref"
               echo "model_route=$model_route"
+              echo "model=$model"
             } >> "$GITHUB_OUTPUT"
           else
             {
@@ -1407,6 +1410,7 @@ jobs:
               echo "provider_profile=${NORMAL_PROVIDER_PROFILE:-}"
               echo "provider_registry_ref=${NORMAL_PROVIDER_REGISTRY_REF:-}"
               echo "model_route=${NORMAL_MODEL_ROUTE:-}"
+              echo "model=${NORMAL_MODEL:-}"
             } >> "$GITHUB_OUTPUT"
           fi
 
@@ -1429,6 +1433,11 @@ jobs:
           REQUESTED_MODEL: ${{ inputs.model }}
           REQUESTED_PROVIDER_PROFILE: ${{ inputs.provider_profile }}
           REQUESTED_PROVIDER_REGISTRY_REF: ${{ inputs.provider_registry_ref }}
+          EFFECTIVE_PROVIDER: ${{ steps.handoff.outputs.provider }}
+          EFFECTIVE_PROVIDER_PROFILE: ${{ steps.handoff.outputs.provider_profile }}
+          EFFECTIVE_PROVIDER_REGISTRY_REF: ${{ steps.handoff.outputs.provider_registry_ref }}
+          EFFECTIVE_MODEL: ${{ steps.handoff.outputs.model }}
+          EFFECTIVE_MODEL_ROUTE: ${{ steps.handoff.outputs.model_route }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
@@ -1568,12 +1577,12 @@ jobs:
               "requested_provider_profile": os.getenv("REQUESTED_PROVIDER_PROFILE") or None,
               "requested_provider_registry_ref": os.getenv("REQUESTED_PROVIDER_REGISTRY_REF") or None,
               "requested_model": os.getenv("REQUESTED_MODEL") or "deepseek-v4.1-flash",
-              "provider": identity.get("provider"),
-              "provider_profile": identity.get("provider_profile") or None,
-              "provider_registry_ref": identity.get("provider_registry_ref"),
+              "provider": os.getenv("EFFECTIVE_PROVIDER") or identity.get("provider"),
+              "provider_profile": os.getenv("EFFECTIVE_PROVIDER_PROFILE") or identity.get("provider_profile") or None,
+              "provider_registry_ref": os.getenv("EFFECTIVE_PROVIDER_REGISTRY_REF") or identity.get("provider_registry_ref"),
               "provider_registry_sha": identity.get("provider_registry_sha"),
-              "model": identity.get("model"),
-              "model_route": identity.get("model_route"),
+              "model": os.getenv("EFFECTIVE_MODEL") or identity.get("model"),
+              "model_route": os.getenv("EFFECTIVE_MODEL_ROUTE") or identity.get("model_route"),
               "skill_commit": identity.get("skill_commit"),
               "started_at": identity.get("run_started_at"),
               "ended_at": os.getenv("RUN_ENDED_AT"),
@@ -2266,6 +2275,7 @@ jobs:
           PROVIDER_PROFILE: ${{ needs.worker_capture.outputs.provider_profile }}
           PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
+          MODEL: ${{ needs.worker_capture.outputs.model }}
           NORMAL_VERIFY_RESULT: ${{ needs.verify.outputs.terminal_status }}
           NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
           RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
@@ -2309,6 +2319,7 @@ jobs:
             --arg provider_profile "$PROVIDER_PROFILE" \
             --arg provider_registry_ref "$PROVIDER_REGISTRY_REF" \
             --arg model_route "$MODEL_ROUTE" \
+            --arg model "$MODEL" \
             --arg verification_state "$verify_state" \
             --arg verification_artifact_name "$verify_artifact" \
             --arg delivery_state "$delivery_state" \
@@ -2338,6 +2349,7 @@ jobs:
               provider_profile: $provider_profile,
               provider_registry_ref: $provider_registry_ref,
               model_route: $model_route,
+              model: $model,
               verification_state: $verification_state,
               verification_artifact_name: $verification_artifact_name,
               delivery_state: $delivery_state,
