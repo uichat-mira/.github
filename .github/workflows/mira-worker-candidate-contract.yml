@@ -124,6 +124,12 @@ jobs:
           assert "Commit/push or reuse exact verified Candidate branch" in delivery
           assert "Create Draft PR with durable handoff" in delivery
           assert "Verify Draft PR and exact Candidate delivery boundary" in delivery
+          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}" in workflow
+          assert "pull_request_url: $" + "{{ steps.handoff.outputs.pull_request_url }}" in worker
+          assert "RECOVERED_CANDIDATE_UPLOAD_OUTCOME" in worker
+          assert "RECOVERED_VERIFY_UPLOAD_OUTCOME" in worker
+          assert "verify_evidence_republish" in worker
+          assert "recovery_mode != 'delivery_complete'" in recovery_index
 
           assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit/push or reuse exact verified Candidate branch")
           assert delivery.index("Commit/push or reuse exact verified Candidate branch") < delivery.index("Create Draft PR with durable handoff")
