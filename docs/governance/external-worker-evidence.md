@@ -95,7 +95,7 @@ AGT-059 publishes a machine-readable `github-actions[bot]` comment on the owning
 
 Because the pointer persists after Artifact retention expires, later runs can report historical-but-unavailable Recovery state instead of pretending no previous work existed.
 
-Pointer selection follows comment publication time rather than assuming the highest run ID is newest. An already delivered Candidate returns its original branch and Draft PR URL as a successful no-op, without publishing another pointer.
+Pointer selection follows Candidate-origin run ID/attempt, so a delayed Delivery retry cannot supersede a newer Candidate merely by publishing later. A malformed newest bot-authored Recovery marker fails closed. An already delivered Candidate returns its original branch and Draft PR URL as a successful no-op, without publishing another pointer.
 
 ## Failure semantics
 
