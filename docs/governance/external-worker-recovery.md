@@ -18,6 +18,8 @@ The pointer is an index only. It records the pointer run and Candidate-origin ru
 
 Only pointers authored by `github-actions[bot]` are trusted. User-authored comments that imitate the marker are ignored.
 
+The latest pointer is selected by the GitHub comment's publication time, with run ID/attempt and comment ID as deterministic tie-breakers. A rerun of an older Actions run can therefore supersede a pointer from a newer run ID when it was actually published later.
+
 Keeping the pointer on the original Issue is deliberate: if an Actions Artifact later expires, a subsequent run can distinguish “historical Candidate existed but is no longer recoverable” from “no prior Candidate ever existed.”
 
 ## Deterministic contract fingerprint
@@ -68,6 +70,8 @@ The machine state distinguishes:
 - `delivery_retry_only` — prior Verify passed for the exact Candidate but Delivery did not complete; Worker/provider setup and Verify are skipped and only trusted Delivery is retried;
 - `delivery_complete` — prior Candidate is already recorded as successfully delivered; the new run exits as a successful no-op rather than creating duplicate work.
 
+A `delivery_complete` no-op returns the original Candidate branch and Draft PR URL to the reusable-workflow caller. It does not expose the fresh temporary branch created during enrollment, re-run Verify/Delivery, or publish a duplicate Recovery pointer.
+
 ## Exact-base and advanced-base behavior
 
 Every Candidate remains bound to its original exact `base_sha`.
@@ -116,6 +120,8 @@ When prior Verify evidence says PASS for the same Candidate identity and Deliver
 - Delivery restores the exact verified Candidate again and retries only Git branch/commit/Draft-PR delivery.
 
 This makes transient GitHub Delivery failure independent from model cost while keeping retries idempotent across partial push/PR side effects.
+
+The Worker/Capture evidence records the actual Candidate and Verify Artifact re-publication outcomes during this path. A failed re-publication is not reported as a recoverable Candidate and cannot proceed to Delivery.
 
 ## Retention and unavailable history
 
