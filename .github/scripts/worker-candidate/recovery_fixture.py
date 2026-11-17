@@ -290,6 +290,7 @@ def main() -> None:
             "run_id": 202,
             "run_attempt": 1,
             "base_sha": manifest["base_sha"],
+            "worker_branch": pointer["worker_branch"],
             "candidate_patch_sha256": manifest["candidate_patch_sha256"],
             "candidate_tree_oid": manifest["candidate_tree_oid"],
             "terminal_status": "failure",
