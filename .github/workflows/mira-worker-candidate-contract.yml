@@ -45,8 +45,8 @@ jobs:
           verify = workflow[verify_start:delivery_start]
           delivery = workflow[delivery_start:]
 
-          assert "value: ${{ jobs.worker_capture.outputs.worker_branch }}" in workflow
-          assert "value: ${{ jobs.delivery.outputs.pull_request_url }}" in workflow
+          assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
+          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url }}" in workflow
 
           assert "contents: read" in worker
           assert "issues: read" in worker
