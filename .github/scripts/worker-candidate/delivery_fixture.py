@@ -122,6 +122,31 @@ def main():
         assert second["commit_sha"] == first_commit
         print("PASS Delivery: retry reuses the exact existing branch commit")
 
+        # A merge commit with the same tree and first parent is not the exact
+        # single-parent Candidate delivery commit and must fail closed.
+        merge_commit = run([
+            "git", "-C", str(repo_b), "commit-tree", tree_oid,
+            "-p", base_sha, "-p", first_commit, "-m", "fixture merge commit",
+        ]).stdout.strip()
+        run([
+            "git", "-C", str(repo_b), "push", "--force", "origin",
+            f"{merge_commit}:refs/heads/{branch}",
+        ])
+        repo_c = root / "run-c"
+        run(["git", "clone", str(bare), str(repo_c)])
+        git(repo_c, "checkout", "main")
+        git(repo_c, "switch", "-c", branch, base_sha)
+        merge_rejected = run([
+            sys.executable, str(DELIVERY), "ensure-branch",
+            "--repo", str(repo_c),
+            "--branch", branch,
+            "--base-sha", base_sha,
+            "--tree-oid", tree_oid,
+            "--commit-message", "agent: implement issue #73",
+        ], expect=2)
+        assert "exact single-parent base/tree identity" in merge_rejected.stderr
+        print("PASS Delivery: merge-shaped remote branch fails closed")
+
         # Fake gh records PR creation and returns the same PR on a later retry.
         bin_dir = root / "bin"
         bin_dir.mkdir()
@@ -136,6 +161,10 @@ args = sys.argv[1:]
 state_path = os.environ["FIXTURE_PR_STATE"]
 count_path = os.environ["FIXTURE_PR_COUNT"]
 if args[:2] == ["pr", "list"]:
+    head_index = args.index("--head")
+    if args[head_index + 1] != os.environ["FIXTURE_HEAD_SELECTOR"]:
+        print("unexpected PR head selector", file=sys.stderr)
+        raise SystemExit(2)
     print(open(state_path, encoding="utf-8").read())
 elif args[:2] == ["pr", "create"]:
     count = int(open(count_path, encoding="utf-8").read()) + 1
@@ -164,10 +193,12 @@ else:
             "FIXTURE_PR_COUNT": str(count_file),
             "FIXTURE_HEAD_SHA": first_commit,
             "FIXTURE_BASE_BRANCH": "main",
+            "FIXTURE_HEAD_SELECTOR": f"uichat-mira:{branch}",
         })
         first_pr = run([
             sys.executable, str(DELIVERY), "ensure-pr",
             "--branch", branch,
+            "--head-owner", "uichat-mira",
             "--base", "main",
             "--head-sha", first_commit,
             "--title", "agent: #73 fixture",
