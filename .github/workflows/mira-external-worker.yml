@@ -153,6 +153,7 @@ jobs:
         id: identity
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
         run: |
@@ -330,12 +331,8 @@ jobs:
 
           gh api "repos/uichat-mira/.github/contents/skills/execute-work-item/SKILL.md?ref=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9"             --jq '.content'             | tr -d '\n'             | base64 --decode             > "${HOME}/.agents/skills/execute-work-item/SKILL.md"
 
-          gh api "repos/uichat-mira/.github/contents/.github/scripts/worker-candidate/candidate.py?ref=c5d93e149765f9068f3d342d2aed3a40a8f20efc"             --jq '.content'             | tr -d '\n'             | base64 --decode             > "${RUNNER_TEMP}/mira-worker/trusted-candidate.py"
-
           test -s "${RUNNER_TEMP}/mira-worker/org-AGENTS.md"
           test -s "${HOME}/.agents/skills/execute-work-item/SKILL.md"
-          test -s "${RUNNER_TEMP}/mira-worker/trusted-candidate.py"
-          echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${RUNNER_TEMP}/mira-worker/identity.txt"
           if test "${{ inputs.free_mode }}" = "true"; then
             # Fail closed if the checkout can override or extend V2 Skill resolution.
             # This intentionally rejects project OpenCode configuration rather than
@@ -715,6 +712,14 @@ jobs:
           set -euo pipefail
 
           root="${RUNNER_TEMP}/mira-worker"
+          gh api "repos/uichat-mira/.github/contents/.github/scripts/worker-candidate/candidate.py?ref=c5d93e149765f9068f3d342d2aed3a40a8f20efc" \
+            --jq '.content' \
+            | tr -d '\n' \
+            | base64 --decode \
+            > "${root}/trusted-candidate.py"
+          test -s "${root}/trusted-candidate.py"
+          echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${root}/identity.txt"
+
           candidate_dir="${root}/candidate"
           status_file="${root}/candidate-status.json"
           artifact_name="mira-external-worker-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
