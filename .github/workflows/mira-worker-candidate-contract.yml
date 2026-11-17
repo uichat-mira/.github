@@ -73,6 +73,7 @@ jobs:
 
           assert "needs:\n      - worker_capture\n      - verify" in delivery
           assert "contents: write" in delivery
+          assert "issues: none" in delivery
           assert "pull-requests: write" in delivery
           assert "secrets." not in delivery
           assert "opencode run" not in delivery
