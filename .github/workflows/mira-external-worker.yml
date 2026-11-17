@@ -1087,7 +1087,6 @@ jobs:
   verify:
     needs: worker_capture
     permissions:
-      actions: read
       contents: read
       issues: none
       pull-requests: none
@@ -1297,7 +1296,6 @@ jobs:
       - worker_capture
       - verify
     permissions:
-      actions: read
       contents: write
       issues: read
       pull-requests: write
@@ -1581,7 +1579,7 @@ jobs:
               "failure_stage": failed or "none",
               "commit_sha": os.getenv("COMMIT_SHA") or None,
               "draft_pr_url": os.getenv("PR_URL") or None,
-              "github_permissions": {"actions": "read", "contents": "write", "issues": "read", "pull_requests": "write"},
+              "github_permissions": {"actions": "none", "contents": "write", "issues": "read", "pull_requests": "write"},
               "provider_credentials_present": False,
               "authority": {
                   "push_worker_branch": True,
