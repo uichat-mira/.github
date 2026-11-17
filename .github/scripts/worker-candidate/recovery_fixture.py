@@ -131,9 +131,22 @@ def main() -> None:
             "issue_number": 59,
             "run_id": 100,
             "run_attempt": 1,
+            "candidate_origin_run_id": 100,
+            "candidate_origin_run_attempt": 1,
         }
-        pointer_new = dict(pointer_old, run_id=101)
-        pointer_replayed = dict(pointer_old, run_id=99, run_attempt=2)
+        pointer_new = dict(
+            pointer_old,
+            run_id=101,
+            candidate_origin_run_id=101,
+        )
+        # A delayed Delivery retry for an older Candidate is published last,
+        # but must not supersede the newer Candidate.
+        pointer_old_retry = dict(pointer_old, run_id=103)
+        pointer_new_rerun = dict(
+            pointer_new,
+            run_attempt=2,
+            candidate_origin_run_attempt=2,
+        )
         all_comments = [
             {
                 "id": 1,
@@ -157,7 +170,7 @@ def main() -> None:
                 "id": 4,
                 "created_at": "2026-11-17T00:03:00Z",
                 "user": {"login": "github-actions[bot]", "type": "Bot"},
-                "body": pointer_body(pointer_replayed),
+                "body": pointer_body(pointer_old_retry),
             },
         ]
         comments_path = root / "all-comments.json"
@@ -172,10 +185,51 @@ def main() -> None:
         )
         discovered = json.loads(discovered_path.read_text())
         assert discovered["found"] is True
-        assert discovered["pointer"]["run_id"] == 99
-        assert discovered["pointer"]["run_attempt"] == 2
+        assert discovered["pointer"]["run_id"] == 101
+        assert discovered["pointer"]["candidate_origin_run_id"] == 101
         assert discovered["pointer_count"] == 3
-        print("PASS pointer: latest GitHub Actions bot pointer wins")
+        print("PASS pointer: delayed retry cannot replace a newer Candidate")
+
+        all_comments.append({
+            "id": 5,
+            "created_at": "2026-11-17T00:04:00Z",
+            "user": {"login": "github-actions[bot]", "type": "Bot"},
+            "body": "<!-- mira-recovery-candidate:v1\nnot-json\n-->",
+        })
+        write(comments_path, all_comments)
+        run(
+            "discover-pointer",
+            "--comments-json", str(comments_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(discovered_path),
+        )
+        invalid_latest = json.loads(discovered_path.read_text())
+        assert invalid_latest["found"] is True
+        assert invalid_latest["invalid_latest_pointer"] is True
+        assert invalid_latest["pointer"] is None
+        print("PASS pointer: malformed latest bot pointer fails closed")
+
+        all_comments.append({
+            "id": 6,
+            "created_at": "2026-11-17T00:05:00Z",
+            "user": {"login": "github-actions[bot]", "type": "Bot"},
+            "body": pointer_body(pointer_new_rerun),
+        })
+        write(comments_path, all_comments)
+        run(
+            "discover-pointer",
+            "--comments-json", str(comments_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(discovered_path),
+        )
+        rerun_latest = json.loads(discovered_path.read_text())
+        assert rerun_latest["found"] is True
+        assert rerun_latest["invalid_latest_pointer"] is False
+        assert rerun_latest["pointer"]["candidate_origin_run_id"] == 101
+        assert rerun_latest["pointer"]["candidate_origin_run_attempt"] == 2
+        print("PASS pointer: latest Candidate-origin attempt wins")
 
         manifest = {
             "schema_version": 1,
