@@ -1378,6 +1378,10 @@ jobs:
               provider_profile="$(jq -r '.provider_profile // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
               provider_registry_ref="$(jq -r '.provider_registry_ref // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
               model_route="$(jq -r '.model_route // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              model="$(jq -r '.model // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              if test -z "$model"; then
+                model="$(jq -r '.model // ""' "$manifest")"
+              fi
               if test -z "$provider"; then
                 provider="$(jq -r '.provider // ""' "$manifest")"
               fi
@@ -2277,9 +2281,11 @@ jobs:
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           MODEL: ${{ needs.worker_capture.outputs.model }}
           NORMAL_VERIFY_RESULT: ${{ needs.verify.outputs.terminal_status }}
+          NORMAL_VERIFY_JOB_RESULT: ${{ needs.verify.result }}
           NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
           RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
           DELIVERY_RESULT: ${{ needs.delivery.outputs.terminal_status }}
+          DELIVERY_JOB_RESULT: ${{ needs.delivery.result }}
           DELIVERY_ARTIFACT: ${{ needs.delivery.outputs.delivery_artifact_name }}
           DRAFT_PR_URL: ${{ needs.delivery.outputs.pull_request_url }}
         run: |
@@ -2289,11 +2295,23 @@ jobs:
             verify_state="success"
             verify_artifact="$RECOVERED_VERIFY_ARTIFACT"
           else
-            verify_state="${NORMAL_VERIFY_RESULT:-skipped}"
+            if test "${NORMAL_VERIFY_RESULT:-}" = "success" || test "${NORMAL_VERIFY_RESULT:-}" = "failure"; then
+              verify_state="$NORMAL_VERIFY_RESULT"
+            elif test "$NORMAL_VERIFY_JOB_RESULT" = "skipped"; then
+              verify_state="skipped"
+            else
+              verify_state="failure"
+            fi
             verify_artifact="${NORMAL_VERIFY_ARTIFACT:-}"
           fi
 
-          delivery_state="${DELIVERY_RESULT:-skipped}"
+          if test "${DELIVERY_RESULT:-}" = "success" || test "${DELIVERY_RESULT:-}" = "failure"; then
+            delivery_state="$DELIVERY_RESULT"
+          elif test "$DELIVERY_JOB_RESULT" = "skipped"; then
+            delivery_state="skipped"
+          else
+            delivery_state="failure"
+          fi
 
           export POINTER_JSON
           POINTER_JSON="$(jq -cn \
