@@ -467,7 +467,7 @@ def main() -> None:
             "--verify-run", str(verify_ok_path),
             "--delivery-run", str(delivery_ok_path),
             "--repository", "uichat-mira/.github",
-            "--issue-number", 59,
+            "--issue-number", "59",
             "--output", str(complete_after_upload_error_path),
         )
         assert json.loads(complete_after_upload_error_path.read_text())["mode"] == "delivery_complete"
