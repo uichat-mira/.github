@@ -1,6 +1,6 @@
 # External Worker Candidate Contract
 
-Status: active implementation contract. AGT-056 established the primitive, AGT-057 made Candidate durable on controllable failure paths, and AGT-058 separates clean-room Verify from least-privilege Delivery.
+Status: active implementation contract. AGT-056 established the primitive, AGT-057 made Candidate durable on controllable failure paths, AGT-058 separates clean-room Verify from least-privilege Delivery, and AGT-059 adds cross-run Recovery.
 
 A Candidate is the durable, recoverable code state produced by one External Worker attempt before trusted verification and GitHub delivery. It is **not** a pull request, acceptance decision, verification result, or second task ledger.
 
@@ -24,7 +24,7 @@ Diagnostic evidence such as `worker-run.json`, trajectories, model output, verif
 | `run_id` / `run_attempt` | Execution identity for the Worker attempt. |
 | `base_branch` | Explicit delivery-base branch name captured as provenance. |
 | `base_sha` | Exact Git commit used to construct the Candidate. Restore must run at this exact commit. |
-| `contract_fingerprint` | Lowercase `sha256:<64 hex>` value. AGT-056 validates its format; canonical Issue/amendment fingerprinting belongs to later Recovery work. |
+| `contract_fingerprint` | Lowercase `sha256:<64 hex>` value produced by the AGT-059 deterministic Issue/amendment contract fingerprint. |
 | `candidate_patch_sha256` | Lowercase SHA-256 digest of `candidate.patch`, prefixed with `sha256:`. |
 | `candidate_patch_bytes` | Exact patch byte length. |
 | `candidate_tree_oid` | Git tree OID produced from the frozen Candidate index. |
@@ -152,7 +152,7 @@ The Candidate implementation is still pinned to immutable AGT-056 commit `c5d93e
 
 The current Candidate Artifact retention remains 14 days. This is a bounded recovery window, not permanent storage.
 
-The current `contract_fingerprint` remains the AGT-057 transitional deterministic fingerprint over the validated Issue title/body plus trusted-maintainer comment snapshot. Canonical cross-run contract compatibility belongs to AGT-059.
+AGT-059 replaces the transitional fingerprint with the deterministic Recovery contract described in [`external-worker-recovery.md`](external-worker-recovery.md). Candidate reuse requires both the canonical contract fingerprint and the ambiguity guard to match.
 
 ### Failure semantics after AGT-058
 
@@ -160,7 +160,7 @@ The current `contract_fingerprint` remains the AGT-057 transitional deterministi
 - Candidate capture/upload failure remains non-recoverable and explicit.
 - Verify restore/digest/tree failure stops before Delivery and therefore produces no Git push or Draft PR.
 - Repository verification failure leaves the Candidate and Verify evidence intact and produces no Delivery.
-- Delivery failure occurs after a verified Candidate exists; retrying Delivery does not require re-running the model.
+- Delivery failure occurs after a verified Candidate exists; AGT-059 records it as `delivery_retry_only` and retries trusted Delivery without re-running the model.
 - Hard runner loss, force cancellation, platform termination, and hostile same-runner compromise remain outside the guarantee.
 
 ### Caller compatibility and rollout boundary
@@ -169,4 +169,4 @@ The reusable workflow input/output contract remains compatible: existing callers
 
 Mira product repositories currently pin immutable historical workflow SHAs. Merging AGT-058 into `uichat-mira/.github@main` therefore does **not** silently switch Desktop, Mobile, Relay, or other callers to the split-job engine. Each caller must deliberately repin to an accepted AGT-058 engine SHA.
 
-The Organization free-worker wrapper also remains pinned to its existing historical engine until an explicit reviewed repin. Free/paid model routing semantics are therefore preserved during AGT-058 implementation rather than silently migrated.
+The Organization free-worker wrapper also remains pinned to its existing historical engine until an explicit reviewed repin. AGT-059 additionally requires future callers to grant `actions: read` for prior-run Artifact recovery and `issues: write` for the isolated Recovery pointer job. These permissions are not silently introduced into existing pinned callers.
