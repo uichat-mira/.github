@@ -394,6 +394,11 @@ def decide(args: argparse.Namespace) -> int:
         dump_json(result, args.output)
         return 0
 
+    if delivery_status in {"success", "failure"} and verify_status != "success":
+        result["reason"] = "Delivery evidence exists without a trusted Verify PASS"
+        dump_json(result, args.output)
+        return 0
+
     if delivery_status == "success":
         result.update(
             mode="delivery_complete",
