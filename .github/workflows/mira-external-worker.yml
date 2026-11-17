@@ -330,8 +330,22 @@ jobs:
             exit 0
           fi
 
+          normalize_artifact_digest() {
+            local digest="${1:-}"
+            if test -z "$digest"; then
+              printf '%s' ""
+            elif [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf '%s' "$digest"
+            elif [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              printf 'sha256:%s' "$digest"
+            else
+              echo "::error::Invalid Artifact digest format." >&2
+              return 2
+            fi
+          }
+
           pointer_artifact_id="$(jq -r '.candidate_artifact_id // ""' "${recovery_root}/pointer.json")"
-          pointer_artifact_digest="$(jq -r '.candidate_artifact_digest // ""' "${recovery_root}/pointer.json")"
+          pointer_artifact_digest="$(normalize_artifact_digest "$(jq -r '.candidate_artifact_digest // ""' "${recovery_root}/pointer.json")")"
           set +e
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}/artifacts?per_page=100" \
             > "${recovery_root}/artifact-list.json" 2> "${recovery_root}/artifact-list.stderr"
@@ -355,7 +369,7 @@ jobs:
             exit 0
           fi
           actual_artifact_id="$(jq -r '.[0].id' <<< "$artifact_matches")"
-          actual_artifact_digest="$(jq -r '.[0].digest // ""' <<< "$artifact_matches")"
+          actual_artifact_digest="$(normalize_artifact_digest "$(jq -r '.[0].digest // ""' <<< "$artifact_matches")")"
           actual_artifact_expired="$(jq -r '.[0].expired' <<< "$artifact_matches")"
           if test "$actual_artifact_id" != "$pointer_artifact_id" || test "$actual_artifact_digest" != "$pointer_artifact_digest" || test "$actual_artifact_expired" != "false"; then
             jq -n --arg run "$source_run_id" \
@@ -1349,6 +1363,23 @@ jobs:
           root="${RUNNER_TEMP}/mira-worker"
           mode="${RECOVERY_MODE:-fresh}"
 
+          normalize_artifact_digest() {
+            local digest="${1:-}"
+            if test -z "$digest"; then
+              printf '%s' ""
+            elif [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf '%s' "$digest"
+            elif [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              printf 'sha256:%s' "$digest"
+            else
+              echo "::error::Invalid Artifact digest format." >&2
+              return 2
+            fi
+          }
+
+          normal_candidate_digest="$(normalize_artifact_digest "${NORMAL_CANDIDATE_DIGEST:-}")"
+          recovered_candidate_digest="$(normalize_artifact_digest "${RECOVERED_CANDIDATE_DIGEST:-}")"
+
           echo "recovery_mode=$mode" >> "$GITHUB_OUTPUT"
           echo "recovery_source_run_id=${RECOVERY_SOURCE_RUN_ID:-}" >> "$GITHUB_OUTPUT"
           echo "contract_fingerprint=${CONTRACT_FINGERPRINT:-}" >> "$GITHUB_OUTPUT"
@@ -1409,7 +1440,7 @@ jobs:
               echo "worker_branch=$candidate_worker_branch"
               echo "candidate_artifact_name=mira-external-worker-candidate-${{ inputs.issue_number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
               echo "candidate_artifact_id=${RECOVERED_CANDIDATE_ID:-}"
-              echo "candidate_artifact_digest=${RECOVERED_CANDIDATE_DIGEST:-}"
+              echo "candidate_artifact_digest=$recovered_candidate_digest"
               echo "candidate_patch_sha256=$patch"
               echo "candidate_tree_oid=$tree"
               echo "contract_fingerprint=$contract"
@@ -1447,7 +1478,7 @@ jobs:
               echo "worker_branch=${CURRENT_WORKER_BRANCH:-}"
               echo "candidate_artifact_name=${NORMAL_CANDIDATE_NAME:-}"
               echo "candidate_artifact_id=${NORMAL_CANDIDATE_ID:-}"
-              echo "candidate_artifact_digest=${NORMAL_CANDIDATE_DIGEST:-}"
+              echo "candidate_artifact_digest=$normal_candidate_digest"
               echo "candidate_patch_sha256=${NORMAL_PATCH:-}"
               echo "candidate_tree_oid=${NORMAL_TREE:-}"
               echo "verification_artifact_name="
