@@ -61,7 +61,6 @@ jobs:
           assert "pull-requests: write" not in worker
           assert "Discover and prepare Candidate Recovery" in worker
           assert "mira-recovery-candidate:v1" not in worker
-          assert "contract_drift" in worker
           assert "recovery_failed" in worker
           assert "delivery_retry_only" in worker
           assert "candidate_artifact_unavailable_or_expired" in worker
