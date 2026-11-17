@@ -58,7 +58,7 @@ jobs:
           recovery_index = workflow[recovery_index_start:]
 
           assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
-          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url }}" in workflow
+          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}" in workflow
 
           assert "actions: read" in worker
           assert "contents: read" in worker
