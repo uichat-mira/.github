@@ -1141,12 +1141,117 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet && test -z "$(git ls-files --others --exclude-standard)"; then
+          if git diff --quiet "$BASE_SHA" -- && test -z "$(git ls-files --others --exclude-standard)"; then
             echo "Worker produced no implementation changes." >&2
             exit 1
           fi
 
           git diff --check
+
+      - name: Re-publish verified Candidate for Delivery-only retry
+        id: recovered_candidate_upload
+        if: ${{ steps.recovery.outputs.mode == 'delivery_retry_only' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-candidate-${{ inputs.issue_number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mira-worker/recovery/candidate/candidate.patch
+            ${{ runner.temp }}/mira-worker/recovery/candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Re-publish trusted Verify evidence for Delivery-only retry
+        id: recovered_verify_upload
+        if: ${{ steps.recovery.outputs.mode == 'delivery_retry_only' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-verify-recovered-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mira-worker/recovery/verify/verify-run.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/verification.log
+            ${{ runner.temp }}/mira-worker/recovery/verify/verification-meta.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/restore-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Resolve Candidate handoff
+        id: handoff
+        if: always()
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
+          RECOVERY_SOURCE_RUN_ID: ${{ steps.recovery.outputs.source_run_id }}
+          CONTRACT_FINGERPRINT: ${{ steps.recovery.outputs.contract_fingerprint }}
+          AMBIGUITY_GUARD: ${{ steps.recovery.outputs.ambiguity_guard }}
+          NORMAL_CANDIDATE_NAME: ${{ steps.candidate.outputs.artifact_name }}
+          NORMAL_CANDIDATE_ID: ${{ steps.candidate_upload.outputs.artifact-id }}
+          NORMAL_CANDIDATE_DIGEST: ${{ steps.candidate_upload.outputs.artifact-digest }}
+          NORMAL_PATCH: ${{ steps.candidate.outputs.patch_sha256 }}
+          NORMAL_TREE: ${{ steps.candidate.outputs.tree_oid }}
+          NORMAL_PROVIDER: ${{ steps.provider.outputs.provider }}
+          NORMAL_PROVIDER_PROFILE: ${{ steps.provider.outputs.provider_profile }}
+          NORMAL_PROVIDER_REGISTRY_REF: ${{ steps.provider.outputs.provider_registry_ref }}
+          NORMAL_MODEL_ROUTE: ${{ steps.provider.outputs.model_route }}
+          RECOVERED_CANDIDATE_ID: ${{ steps.recovered_candidate_upload.outputs.artifact-id }}
+          RECOVERED_CANDIDATE_DIGEST: ${{ steps.recovered_candidate_upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          mode="${RECOVERY_MODE:-fresh}"
+
+          echo "recovery_mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "recovery_source_run_id=${RECOVERY_SOURCE_RUN_ID:-}" >> "$GITHUB_OUTPUT"
+          echo "contract_fingerprint=${CONTRACT_FINGERPRINT:-}" >> "$GITHUB_OUTPUT"
+          echo "ambiguity_guard=${AMBIGUITY_GUARD:-}" >> "$GITHUB_OUTPUT"
+
+          if test "$mode" = "delivery_retry_only"; then
+            manifest="$root/recovery/candidate/candidate.json"
+            verify_run="$root/recovery/verify/verify-run.json"
+            test -s "$manifest"
+            test -s "$verify_run"
+            patch="$(jq -r '.candidate_patch_sha256' "$manifest")"
+            tree="$(jq -r '.candidate_tree_oid' "$manifest")"
+            contract="$(jq -r '.contract_fingerprint' "$manifest")"
+            verify_status="$(jq -r '.terminal_status' "$verify_run")"
+            verify_patch="$(jq -r '.candidate_patch_sha256' "$verify_run")"
+            verify_tree="$(jq -r '.candidate_tree_oid' "$verify_run")"
+            test "$verify_status" = "success"
+            test "$patch" = "$verify_patch"
+            test "$tree" = "$verify_tree"
+
+            {
+              echo "candidate_artifact_name=mira-external-worker-candidate-${{ inputs.issue_number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              echo "candidate_artifact_id=${RECOVERED_CANDIDATE_ID:-}"
+              echo "candidate_artifact_digest=${RECOVERED_CANDIDATE_DIGEST:-}"
+              echo "candidate_patch_sha256=$patch"
+              echo "candidate_tree_oid=$tree"
+              echo "contract_fingerprint=$contract"
+              echo "verification_artifact_name=mira-external-worker-verify-recovered-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              echo "verified_patch_sha256=$verify_patch"
+              echo "verified_tree_oid=$verify_tree"
+              echo "verified_contract_fingerprint=$contract"
+              echo "provider=$(jq -r '.provider // ""' "$manifest")"
+              echo "provider_profile="
+              echo "provider_registry_ref="
+              echo "model_route=$(jq -r 'if (.provider // "") != "" and (.model // "") != "" then (.provider + "/" + .model) else "" end' "$manifest")"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "candidate_artifact_name=${NORMAL_CANDIDATE_NAME:-}"
+              echo "candidate_artifact_id=${NORMAL_CANDIDATE_ID:-}"
+              echo "candidate_artifact_digest=${NORMAL_CANDIDATE_DIGEST:-}"
+              echo "candidate_patch_sha256=${NORMAL_PATCH:-}"
+              echo "candidate_tree_oid=${NORMAL_TREE:-}"
+              echo "verification_artifact_name="
+              echo "verified_patch_sha256="
+              echo "verified_tree_oid="
+              echo "verified_contract_fingerprint="
+              echo "provider=${NORMAL_PROVIDER:-}"
+              echo "provider_profile=${NORMAL_PROVIDER_PROFILE:-}"
+              echo "provider_registry_ref=${NORMAL_PROVIDER_REGISTRY_REF:-}"
+              echo "model_route=${NORMAL_MODEL_ROUTE:-}"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Finalize Worker/Capture evidence
         id: worker_evidence
