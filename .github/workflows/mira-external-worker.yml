@@ -209,7 +209,7 @@ jobs:
           base_branch=${BASE_BRANCH}
           base_sha=${base_sha}
           worker_branch=${worker_branch}
-          opencode_version=${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
+          opencode_version=2.3.0
           skill_commit=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9
           trusted_maintainer_comments=${maintainer_comment_count}
           EOF
@@ -786,14 +786,13 @@ jobs:
               echo "::error::Free Worker refuses a project-defined execute-work-item Skill." >&2
               exit 1
             fi
-            # OpenCode V2 discovers its own native global skills directory; the
-            # legacy ~/.agents source is not reliable across V2 releases.
-            mkdir -p "${HOME}/.config/opencode/skills/execute-work-item"
-            cp "${HOME}/.agents/skills/execute-work-item/SKILL.md" \
-              "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
-            cmp -s "${HOME}/.agents/skills/execute-work-item/SKILL.md" \
-              "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
           fi
+          # Both paid and free V2 routes use the native global Skill directory.
+          mkdir -p "${HOME}/.config/opencode/skills/execute-work-item"
+          cp "${HOME}/.agents/skills/execute-work-item/SKILL.md" \
+            "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
+          cmp -s "${HOME}/.agents/skills/execute-work-item/SKILL.md" \
+            "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
           test -s AGENTS.md
 
       - name: Install pinned OpenCode CLI
@@ -802,11 +801,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if test "${{ inputs.free_mode }}" = "true"; then
-            curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.0.24
-          else
-            curl -fsSL https://opencode.ai/install | bash -s -- --version 1.18.34
-          fi
+          # Caller SHA pins keep existing executions on their frozen engine.
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.3.0
           echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       - name: Verify OpenCode version
@@ -816,11 +812,7 @@ jobs:
         run: |
           set -euo pipefail
           actual="$(opencode --version)"
-          if test "${{ inputs.free_mode }}" = "true"; then
-            test "$actual" = "opencode v2.0.24"
-          else
-            test "$actual" = "1.18.34"
-          fi
+          test "$actual" = "opencode v2.3.0"
 
       - name: Run bounded external Worker
         if: ${{ steps.recovery.outputs.run_worker == 'true' }}
@@ -872,56 +864,46 @@ jobs:
             unset OPENCODE_GO_API_KEY PROVIDER_API_KEY provider_key
           fi
 
+          # Native V2 configuration: ordered permissions and an optional
+          # provider overlay derived from the already-frozen V1 profile registry.
+          # Do not hand-edit registry profiles or duplicate provider truth.
           export OPENCODE_CONFIG_CONTENT
-          if test "$FREE_MODE" = "true"; then
-            # OpenCode V2 uses ordered "permissions" rules with "shell"/"subagent".
-            # V1 "permission" / "bash" config is NOT understood by the V2 CLI.
-            OPENCODE_CONFIG_CONTENT="$(jq -cn '{
-              share: "disabled",
-              permissions: [
-                {action:"read",resource:"*",effect:"allow"},
-                {action:"read",resource:"*.env*",effect:"deny"},
-                {action:"glob",resource:"*",effect:"allow"},
-                {action:"grep",resource:"*",effect:"allow"},
-                {action:"edit",resource:"*",effect:"allow"},
-                {action:"skill",resource:"*",effect:"deny"},
-                {action:"skill",resource:"execute-work-item",effect:"allow"},
-                {action:"shell",resource:"*",effect:"allow"},
-                {action:"subagent",resource:"*",effect:"deny"},
-                {action:"webfetch",resource:"*",effect:"allow"},
-                {action:"websearch",resource:"*",effect:"allow"},
-                {action:"external_directory",resource:"*",effect:"deny"},
-                {action:"execute",resource:"*",effect:"deny"}
-              ]
-            }')"
-          else
-            OPENCODE_CONFIG_CONTENT="$(
-              jq -cn --slurpfile route "$route" '
-                {
-                  "share": "disabled",
-                  "autoupdate": false,
-                  "permission": {
-                    "read": "allow",
-                    "glob": "allow",
-                    "grep": "allow",
-                    "list": "allow",
-                    "skill": "allow",
-                    "edit": "allow",
-                    "write": "allow",
-                    "bash": "allow",
-                    "task": "deny",
-                    "webfetch": "allow",
-                    "websearch": "allow",
-                    "question": "deny",
-                    "external_directory": "deny"
-                  }
-                }
-                + (if (($route[0].provider_config // {}) | length) == 0 then {}
-                   else {"provider": $route[0].provider_config}
-                   end)
-              '
-            )"
-          fi
+          OPENCODE_CONFIG_CONTENT="$(
+            jq -cn --slurpfile route "$route" --argjson free "$FREE_MODE" '
+              {
+                share: "disabled",
+                update: "disable",
+                permissions: [
+                  {action:"read",resource:"*",effect:"allow"},
+                  {action:"read",resource:"*.env*",effect:"deny"},
+                  {action:"glob",resource:"*",effect:"allow"},
+                  {action:"grep",resource:"*",effect:"allow"},
+                  {action:"edit",resource:"*",effect:"allow"},
+                  {action:"skill",resource:"*",effect:(if $free then "deny" else "allow" end)},
+                  {action:"skill",resource:"execute-work-item",effect:"allow"},
+                  {action:"shell",resource:"*",effect:"allow"},
+                  {action:"subagent",resource:"*",effect:"deny"},
+                  {action:"webfetch",resource:"*",effect:"allow"},
+                  {action:"websearch",resource:"*",effect:"allow"},
+                  {action:"external_directory",resource:"*",effect:"deny"},
+                  {action:"execute",resource:"*",effect:"deny"}
+                ]
+              }
+              + (if $free or (($route[0].provider_config // {}) | length) == 0 then {}
+                 else {
+                   providers: (
+                     $route[0].provider_config
+                     | with_entries(.value |= {
+                       name: (.name // null),
+                       package: ("aisdk:" + .npm),
+                       settings: (.options // {}),
+                       models: (.models // {})
+                     })
+                   )
+                 }
+                 end)
+            '
+          )"
 
           issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
           issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
@@ -1297,6 +1279,8 @@ jobs:
         id: bounded
         if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         shell: bash
+        env:
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
         run: |
           set -euo pipefail
 
