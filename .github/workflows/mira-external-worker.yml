@@ -75,9 +75,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
-      worker_branch: ${{ steps.identity.outputs.worker_branch }}
+      worker_branch: ${{ steps.handoff.outputs.worker_branch }}
       base_sha: ${{ steps.identity.outputs.base_sha }}
       candidate_base_sha: ${{ steps.handoff.outputs.candidate_base_sha }}
+      candidate_origin_run_id: ${{ steps.handoff.outputs.candidate_origin_run_id }}
+      candidate_origin_run_attempt: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
+      candidate_base_branch: ${{ steps.handoff.outputs.candidate_base_branch }}
       recovery_mode: ${{ steps.handoff.outputs.recovery_mode }}
       recovery_source_run_id: ${{ steps.handoff.outputs.recovery_source_run_id }}
       candidate_artifact_name: ${{ steps.handoff.outputs.candidate_artifact_name }}
