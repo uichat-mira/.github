@@ -29,7 +29,7 @@ def write(path: Path, value) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def fingerprint(root: Path, issue, comments, name: str):
+def fingerprint(root: Path, issue, comments, name: str, *, base_branch="main", verification_command="pnpm test"):
     issue_path = root / f"{name}-issue.json"
     comments_path = root / f"{name}-comments.json"
     out = root / f"{name}-contract.json"
@@ -39,6 +39,8 @@ def fingerprint(root: Path, issue, comments, name: str):
         "fingerprint",
         "--issue-json", str(issue_path),
         "--comments-json", str(comments_path),
+        "--base-branch", base_branch,
+        "--verification-command", verification_command,
         "--output", str(out),
     )
     return json.loads(out.read_text())
@@ -112,6 +114,17 @@ def main() -> None:
         assert fp5["fingerprint"] != fp1["fingerprint"]
         print("PASS fingerprint: Issue body drift detected")
 
+        changed_verification = fingerprint(
+            root, issue, base_comments, "changed-verification",
+            verification_command="pnpm test && pnpm lint",
+        )
+        assert changed_verification["fingerprint"] != fp1["fingerprint"]
+        changed_base = fingerprint(
+            root, issue, base_comments, "changed-base", base_branch="prod",
+        )
+        assert changed_base["fingerprint"] != fp1["fingerprint"]
+        print("PASS fingerprint: base branch and verification profile drift detected")
+
         pointer_old = {
             "schema_version": 1,
             "repository": "uichat-mira/.github",
@@ -160,6 +173,9 @@ def main() -> None:
             "schema_version": 1,
             "repository": "uichat-mira/.github",
             "issue_number": 59,
+            "run_id": "101",
+            "run_attempt": 1,
+            "base_branch": "main",
             "base_sha": "a" * 40,
             "contract_fingerprint": fp1["fingerprint"],
             "candidate_patch_sha256": "sha256:" + "b" * 64,
@@ -171,6 +187,9 @@ def main() -> None:
             "issue_number": 59,
             "run_id": 101,
             "run_attempt": 1,
+            "candidate_origin_run_id": 101,
+            "candidate_origin_run_attempt": 1,
+            "base_branch": manifest["base_branch"],
             "base_sha": manifest["base_sha"],
             "contract_fingerprint": fp1["fingerprint"],
             "ambiguity_guard": fp1["ambiguity_guard"],
@@ -200,9 +219,16 @@ def main() -> None:
         print("PASS decision: unverified Candidate is recoverable")
 
         verify_fail = {
-            "terminal_status": "failure",
+            "schema_version": 1,
+            "job_role": "verify",
+            "repository": "uichat-mira/.github",
+            "run_id": manifest["run_id"],
+            "run_attempt": manifest["run_attempt"],
+            "base_sha": manifest["base_sha"],
             "candidate_patch_sha256": manifest["candidate_patch_sha256"],
             "candidate_tree_oid": manifest["candidate_tree_oid"],
+            "contract_fingerprint": manifest["contract_fingerprint"],
+            "terminal_status": "failure",
         }
         verify_fail_path = root / "verify-fail.json"
         write(verify_fail_path, verify_fail)
@@ -239,8 +265,66 @@ def main() -> None:
         assert retry["run_worker"] is False
         print("PASS decision: verified undelivered Candidate skips model")
 
+        retry_pointer = dict(pointer, run_id=202, run_attempt=1)
+        retry_pointer_path = root / "retry-pointer.json"
+        write(retry_pointer_path, retry_pointer)
+        retry_delivery = {
+            "schema_version": 1,
+            "job_role": "delivery",
+            "repository": "uichat-mira/.github",
+            "run_id": 202,
+            "run_attempt": 1,
+            "base_sha": manifest["base_sha"],
+            "candidate_patch_sha256": manifest["candidate_patch_sha256"],
+            "candidate_tree_oid": manifest["candidate_tree_oid"],
+            "terminal_status": "failure",
+            "stages": {
+                "restore": "success",
+                "verified_identity": "success",
+                "commit_push": "failure",
+                "draft_pr": "skipped",
+                "draft_pr_boundary": "skipped",
+            },
+        }
+        retry_delivery_path = root / "retry-delivery.json"
+        write(retry_delivery_path, retry_delivery)
+        retry_again_path = root / "retry-again.json"
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(retry_pointer_path),
+            "--candidate-manifest", str(manifest_path),
+            "--verify-run", str(verify_ok_path),
+            "--delivery-run", str(retry_delivery_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(retry_again_path),
+        )
+        assert json.loads(retry_again_path.read_text())["mode"] == "delivery_retry_only"
+        print("PASS decision: retry run can validate original Candidate and current Delivery evidence")
+
         delivery_ok_path = root / "delivery-ok.json"
-        write(delivery_ok_path, {"terminal_status": "success"})
+        delivery_ok = {
+            "schema_version": 1,
+            "job_role": "delivery",
+            "repository": "uichat-mira/.github",
+            "run_id": pointer["run_id"],
+            "run_attempt": pointer["run_attempt"],
+            "base_sha": manifest["base_sha"],
+            "candidate_patch_sha256": manifest["candidate_patch_sha256"],
+            "candidate_tree_oid": manifest["candidate_tree_oid"],
+            "terminal_status": "success",
+            "commit_sha": "d" * 40,
+            "draft_pr_url": "https://github.com/uichat-mira/.github/pull/1",
+            "stages": {
+                "restore": "success",
+                "verified_identity": "success",
+                "commit_push": "success",
+                "draft_pr": "success",
+                "draft_pr_boundary": "success",
+            },
+        }
+        write(delivery_ok_path, delivery_ok)
         complete_path = root / "complete.json"
         run(
             "decide",
@@ -255,6 +339,92 @@ def main() -> None:
         )
         assert json.loads(complete_path.read_text())["mode"] == "delivery_complete"
         print("PASS decision: already delivered Candidate does not rerun model")
+
+        tampered_verify = dict(verify_ok, candidate_tree_oid="e" * 40)
+        tampered_verify_path = root / "tampered-verify.json"
+        write(tampered_verify_path, tampered_verify)
+        bad_verify_path = root / "bad-verify.json"
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(pointer_path),
+            "--candidate-manifest", str(manifest_path),
+            "--verify-run", str(tampered_verify_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(bad_verify_path),
+        )
+        assert json.loads(bad_verify_path.read_text())["mode"] == "recovery_failed"
+        print("PASS decision: mismatched Verify evidence fails closed")
+
+        missing_verify_path = root / "missing-verify.json"
+        missing_verify_pointer = dict(pointer, verification_state="success")
+        missing_verify_pointer_path = root / "missing-verify-pointer.json"
+        write(missing_verify_pointer_path, missing_verify_pointer)
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(missing_verify_pointer_path),
+            "--candidate-manifest", str(manifest_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(missing_verify_path),
+        )
+        assert json.loads(missing_verify_path.read_text())["mode"] == "recovery_failed"
+        print("PASS decision: missing trusted Verify evidence fails closed")
+
+        tampered_delivery = dict(delivery_ok, candidate_tree_oid="e" * 40)
+        tampered_delivery_path = root / "tampered-delivery.json"
+        write(tampered_delivery_path, tampered_delivery)
+        bad_delivery_path = root / "bad-delivery.json"
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(pointer_path),
+            "--candidate-manifest", str(manifest_path),
+            "--verify-run", str(verify_ok_path),
+            "--delivery-run", str(tampered_delivery_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(bad_delivery_path),
+        )
+        assert json.loads(bad_delivery_path.read_text())["mode"] == "recovery_failed"
+        print("PASS decision: mismatched Delivery evidence fails closed")
+
+        missing_delivery_pointer = dict(pointer, delivery_state="failure")
+        missing_delivery_pointer_path = root / "missing-delivery-pointer.json"
+        write(missing_delivery_pointer_path, missing_delivery_pointer)
+        missing_delivery_path = root / "missing-delivery.json"
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(missing_delivery_pointer_path),
+            "--candidate-manifest", str(manifest_path),
+            "--verify-run", str(verify_ok_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", "59",
+            "--output", str(missing_delivery_path),
+        )
+        assert json.loads(missing_delivery_path.read_text())["mode"] == "recovery_failed"
+        print("PASS decision: missing Delivery evidence fails closed")
+
+        delivery_uploaded_after_success = dict(pointer, delivery_state="failure")
+        delivery_uploaded_after_success_path = root / "delivery-upload-failure-pointer.json"
+        write(delivery_uploaded_after_success_path, delivery_uploaded_after_success)
+        complete_after_upload_error_path = root / "complete-after-upload-error.json"
+        run(
+            "decide",
+            "--current-contract", str(contract_path),
+            "--pointer", str(delivery_uploaded_after_success_path),
+            "--candidate-manifest", str(manifest_path),
+            "--verify-run", str(verify_ok_path),
+            "--delivery-run", str(delivery_ok_path),
+            "--repository", "uichat-mira/.github",
+            "--issue-number", 59,
+            "--output", str(complete_after_upload_error_path),
+        )
+        assert json.loads(complete_after_upload_error_path.read_text())["mode"] == "delivery_complete"
+        print("PASS decision: trusted success evidence beats failed Artifact-upload job result")
 
         drift_contract_path = root / "drift-contract.json"
         write(drift_contract_path, fp3)
