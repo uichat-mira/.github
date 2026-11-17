@@ -233,11 +233,14 @@ def main() -> None:
         }
         verify_fail_path = root / "verify-fail.json"
         write(verify_fail_path, verify_fail)
+        verify_fail_pointer = dict(pointer, verification_state="failure")
+        verify_fail_pointer_path = root / "verify-fail-pointer.json"
+        write(verify_fail_pointer_path, verify_fail_pointer)
         fail_path = root / "recover-verify-fail.json"
         run(
             "decide",
             "--current-contract", str(contract_path),
-            "--pointer", str(pointer_path),
+            "--pointer", str(verify_fail_pointer_path),
             "--candidate-manifest", str(manifest_path),
             "--verify-run", str(verify_fail_path),
             "--repository", "uichat-mira/.github",
@@ -250,11 +253,14 @@ def main() -> None:
         verify_ok = dict(verify_fail, terminal_status="success")
         verify_ok_path = root / "verify-ok.json"
         write(verify_ok_path, verify_ok)
+        verify_ok_pointer = dict(pointer, verification_state="success")
+        verify_ok_pointer_path = root / "verify-ok-pointer.json"
+        write(verify_ok_pointer_path, verify_ok_pointer)
         retry_path = root / "retry.json"
         run(
             "decide",
             "--current-contract", str(contract_path),
-            "--pointer", str(pointer_path),
+            "--pointer", str(verify_ok_pointer_path),
             "--candidate-manifest", str(manifest_path),
             "--verify-run", str(verify_ok_path),
             "--repository", "uichat-mira/.github",
@@ -266,7 +272,7 @@ def main() -> None:
         assert retry["run_worker"] is False
         print("PASS decision: verified undelivered Candidate skips model")
 
-        retry_pointer = dict(pointer, run_id=202, run_attempt=1)
+        retry_pointer = dict(verify_ok_pointer, run_id=202, run_attempt=1, delivery_state="failure")
         retry_pointer_path = root / "retry-pointer.json"
         write(retry_pointer_path, retry_pointer)
         retry_delivery = {
@@ -326,11 +332,14 @@ def main() -> None:
             },
         }
         write(delivery_ok_path, delivery_ok)
+        complete_pointer = dict(verify_ok_pointer, delivery_state="success")
+        complete_pointer_path = root / "complete-pointer.json"
+        write(complete_pointer_path, complete_pointer)
         complete_path = root / "complete.json"
         run(
             "decide",
             "--current-contract", str(contract_path),
-            "--pointer", str(pointer_path),
+            "--pointer", str(complete_pointer_path),
             "--candidate-manifest", str(manifest_path),
             "--verify-run", str(verify_ok_path),
             "--delivery-run", str(delivery_ok_path),
@@ -348,7 +357,7 @@ def main() -> None:
         run(
             "decide",
             "--current-contract", str(contract_path),
-            "--pointer", str(pointer_path),
+            "--pointer", str(verify_ok_pointer_path),
             "--candidate-manifest", str(manifest_path),
             "--verify-run", str(tampered_verify_path),
             "--repository", "uichat-mira/.github",
@@ -359,7 +368,7 @@ def main() -> None:
         print("PASS decision: mismatched Verify evidence fails closed")
 
         missing_verify_path = root / "missing-verify.json"
-        missing_verify_pointer = dict(pointer, verification_state="success")
+        missing_verify_pointer = dict(verify_ok_pointer)
         missing_verify_pointer_path = root / "missing-verify-pointer.json"
         write(missing_verify_pointer_path, missing_verify_pointer)
         run(
@@ -381,7 +390,7 @@ def main() -> None:
         run(
             "decide",
             "--current-contract", str(contract_path),
-            "--pointer", str(pointer_path),
+            "--pointer", str(verify_ok_pointer_path),
             "--candidate-manifest", str(manifest_path),
             "--verify-run", str(verify_ok_path),
             "--delivery-run", str(tampered_delivery_path),
@@ -392,7 +401,7 @@ def main() -> None:
         assert json.loads(bad_delivery_path.read_text())["mode"] == "recovery_failed"
         print("PASS decision: mismatched Delivery evidence fails closed")
 
-        missing_delivery_pointer = dict(pointer, delivery_state="failure")
+        missing_delivery_pointer = dict(verify_ok_pointer, delivery_state="failure")
         missing_delivery_pointer_path = root / "missing-delivery-pointer.json"
         write(missing_delivery_pointer_path, missing_delivery_pointer)
         missing_delivery_path = root / "missing-delivery.json"
@@ -409,7 +418,7 @@ def main() -> None:
         assert json.loads(missing_delivery_path.read_text())["mode"] == "recovery_failed"
         print("PASS decision: missing Delivery evidence fails closed")
 
-        delivery_uploaded_after_success = dict(pointer, delivery_state="failure")
+        delivery_uploaded_after_success = dict(verify_ok_pointer, delivery_state="failure")
         delivery_uploaded_after_success_path = root / "delivery-upload-failure-pointer.json"
         write(delivery_uploaded_after_success_path, delivery_uploaded_after_success)
         complete_after_upload_error_path = root / "complete-after-upload-error.json"
