@@ -133,6 +133,7 @@ def main() -> None:
             "run_attempt": 1,
         }
         pointer_new = dict(pointer_old, run_id=101)
+        pointer_replayed = dict(pointer_old, run_id=99, run_attempt=2)
         all_comments = [
             {
                 "id": 1,
@@ -152,6 +153,12 @@ def main() -> None:
                 "user": {"login": "github-actions[bot]", "type": "Bot"},
                 "body": pointer_body(pointer_new),
             },
+            {
+                "id": 4,
+                "created_at": "2026-11-17T00:03:00Z",
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+                "body": pointer_body(pointer_replayed),
+            },
         ]
         comments_path = root / "all-comments.json"
         discovered_path = root / "discovered.json"
@@ -165,8 +172,9 @@ def main() -> None:
         )
         discovered = json.loads(discovered_path.read_text())
         assert discovered["found"] is True
-        assert discovered["pointer"]["run_id"] == 101
-        assert discovered["pointer_count"] == 2
+        assert discovered["pointer"]["run_id"] == 99
+        assert discovered["pointer"]["run_attempt"] == 2
+        assert discovered["pointer_count"] == 3
         print("PASS pointer: latest GitHub Actions bot pointer wins")
 
         manifest = {
@@ -322,6 +330,7 @@ def main() -> None:
             "run_id": pointer["run_id"],
             "run_attempt": pointer["run_attempt"],
             "base_sha": manifest["base_sha"],
+            "worker_branch": pointer["worker_branch"],
             "candidate_patch_sha256": manifest["candidate_patch_sha256"],
             "candidate_tree_oid": manifest["candidate_tree_oid"],
             "terminal_status": "failure",
@@ -352,6 +361,7 @@ def main() -> None:
             "run_id": pointer["run_id"],
             "run_attempt": pointer["run_attempt"],
             "base_sha": manifest["base_sha"],
+            "worker_branch": pointer["worker_branch"],
             "candidate_patch_sha256": manifest["candidate_patch_sha256"],
             "candidate_tree_oid": manifest["candidate_tree_oid"],
             "terminal_status": "success",
@@ -366,7 +376,11 @@ def main() -> None:
             },
         }
         write(delivery_ok_path, delivery_ok)
-        complete_pointer = dict(verify_ok_pointer, delivery_state="success")
+        complete_pointer = dict(
+            verify_ok_pointer,
+            delivery_state="success",
+            draft_pr_url=delivery_ok["draft_pr_url"],
+        )
         complete_pointer_path = root / "complete-pointer.json"
         write(complete_pointer_path, complete_pointer)
         complete_path = root / "complete.json"
@@ -421,7 +435,11 @@ def main() -> None:
         tampered_delivery_path = root / "tampered-delivery.json"
         write(tampered_delivery_path, tampered_delivery)
         bad_delivery_path = root / "bad-delivery.json"
-        tampered_delivery_pointer = dict(verify_ok_pointer, delivery_state="failure")
+        tampered_delivery_pointer = dict(
+            verify_ok_pointer,
+            delivery_state="failure",
+            draft_pr_url=delivery_ok["draft_pr_url"],
+        )
         tampered_delivery_pointer_path = root / "tampered-delivery-pointer.json"
         write(tampered_delivery_pointer_path, tampered_delivery_pointer)
         run(
@@ -455,7 +473,11 @@ def main() -> None:
         assert json.loads(missing_delivery_path.read_text())["mode"] == "recovery_failed"
         print("PASS decision: missing Delivery evidence fails closed")
 
-        delivery_uploaded_after_success = dict(verify_ok_pointer, delivery_state="failure")
+        delivery_uploaded_after_success = dict(
+            verify_ok_pointer,
+            delivery_state="failure",
+            draft_pr_url=delivery_ok["draft_pr_url"],
+        )
         delivery_uploaded_after_success_path = root / "delivery-upload-failure-pointer.json"
         write(delivery_uploaded_after_success_path, delivery_uploaded_after_success)
         complete_after_upload_error_path = root / "complete-after-upload-error.json"
