@@ -138,12 +138,20 @@ def fingerprint(args: argparse.Namespace) -> int:
     amendments.sort(key=lambda x: (x.get("created_at") or "", x.get("id") or 0))
     ambiguous.sort(key=lambda x: (x.get("created_at") or "", x.get("id") or 0))
 
+    verification_command = normalize_text(getattr(args, "verification_command", ""))
     canonical = {
-        "fingerprint_version": "mira-contract-v1",
+        "fingerprint_version": "mira-contract-v2",
         "issue": {
             "number": issue.get("number"),
             "title": normalize_text(issue.get("title")).strip(),
             "body": normalize_text(issue.get("body")),
+        },
+        "execution_contract": {
+            "base_branch": normalize_text(getattr(args, "base_branch", "")).strip(),
+            "verification_command_sha256": (
+                "sha256:" + hashlib.sha256(verification_command.encode("utf-8")).hexdigest()
+                if verification_command else ""
+            ),
         },
         "trusted_amendments": amendments,
     }
@@ -230,6 +238,61 @@ def require_equal(name: str, left: Any, right: Any) -> None:
         raise RecoveryError(f"{name} mismatch")
 
 
+def as_int(name: str, value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise RecoveryError(f"{name} is not an integer") from exc
+
+
+def validate_verify_evidence(
+    verify: dict[str, Any],
+    *,
+    repository: str,
+    manifest: dict[str, Any],
+) -> str:
+    require_equal("verify job role", verify.get("job_role"), "verify")
+    require_equal("verify repository", verify.get("repository"), repository)
+    require_equal("verify run id", as_int("verify run id", verify.get("run_id")), as_int("candidate run id", manifest.get("run_id")))
+    require_equal("verify run attempt", as_int("verify run attempt", verify.get("run_attempt")), as_int("candidate run attempt", manifest.get("run_attempt")))
+    require_equal("verify base SHA", verify.get("base_sha"), manifest.get("base_sha"))
+    require_equal("verify patch digest", verify.get("candidate_patch_sha256"), manifest.get("candidate_patch_sha256"))
+    require_equal("verify tree", verify.get("candidate_tree_oid"), manifest.get("candidate_tree_oid"))
+    require_equal("verify contract fingerprint", verify.get("contract_fingerprint"), manifest.get("contract_fingerprint"))
+    status = verify.get("terminal_status")
+    if status not in {"success", "failure"}:
+        raise RecoveryError("verify terminal status is invalid")
+    return status
+
+
+def validate_delivery_evidence(
+    delivery: dict[str, Any],
+    *,
+    repository: str,
+    pointer: dict[str, Any],
+    manifest: dict[str, Any],
+) -> str:
+    require_equal("delivery job role", delivery.get("job_role"), "delivery")
+    require_equal("delivery repository", delivery.get("repository"), repository)
+    require_equal("delivery run id", as_int("delivery run id", delivery.get("run_id")), as_int("pointer run id", pointer.get("run_id")))
+    require_equal("delivery run attempt", as_int("delivery run attempt", delivery.get("run_attempt")), as_int("pointer run attempt", pointer.get("run_attempt")))
+    require_equal("delivery base SHA", delivery.get("base_sha"), manifest.get("base_sha"))
+    require_equal("delivery patch digest", delivery.get("candidate_patch_sha256"), manifest.get("candidate_patch_sha256"))
+    require_equal("delivery tree", delivery.get("candidate_tree_oid"), manifest.get("candidate_tree_oid"))
+    status = delivery.get("terminal_status")
+    if status not in {"success", "failure"}:
+        raise RecoveryError("delivery terminal status is invalid")
+    if status == "success":
+        if not delivery.get("commit_sha") or not delivery.get("draft_pr_url"):
+            raise RecoveryError("successful Delivery evidence is missing commit or Draft PR identity")
+        stages = delivery.get("stages")
+        if not isinstance(stages, dict) or any(stages.get(name) != "success" for name in (
+            "restore", "verified_identity", "commit_push", "draft_pr", "draft_pr_boundary"
+        )):
+            raise RecoveryError("successful Delivery evidence has incomplete stage results")
+    return status
+
+
 def decide(args: argparse.Namespace) -> int:
     contract = load_json(args.current_contract)
     pointer = load_json(args.pointer)
@@ -241,30 +304,30 @@ def decide(args: argparse.Namespace) -> int:
         "run_worker": False,
         "reuse_candidate": False,
         "reason": None,
-        "source_run_id": pointer.get("run_id"),
-        "source_run_attempt": pointer.get("run_attempt"),
-        "source_base_sha": pointer.get("base_sha"),
+        "source_run_id": pointer.get("run_id") if isinstance(pointer, dict) else None,
+        "source_run_attempt": pointer.get("run_attempt") if isinstance(pointer, dict) else None,
+        "source_base_sha": pointer.get("base_sha") if isinstance(pointer, dict) else None,
     }
 
     try:
+        if not isinstance(contract, dict) or not isinstance(pointer, dict) or not isinstance(manifest, dict):
+            raise RecoveryError("contract, pointer, and Candidate manifest must be objects")
+        require_equal("Candidate schema version", manifest.get("schema_version"), 1)
         require_equal("repository", manifest.get("repository"), args.repository)
-        require_equal("issue", int(manifest.get("issue_number") or 0), args.issue_number)
+        require_equal("pointer repository", pointer.get("repository"), args.repository)
+        require_equal("issue", as_int("Candidate Issue number", manifest.get("issue_number")), args.issue_number)
+        require_equal("pointer Issue number", as_int("pointer Issue number", pointer.get("issue_number")), args.issue_number)
+        require_equal("Candidate origin run id", as_int("Candidate run id", manifest.get("run_id")), as_int("pointer Candidate origin run id", pointer.get("candidate_origin_run_id")))
+        require_equal("Candidate origin run attempt", as_int("Candidate run attempt", manifest.get("run_attempt")), as_int("pointer Candidate origin run attempt", pointer.get("candidate_origin_run_attempt")))
+        require_equal("base branch", manifest.get("base_branch"), pointer.get("base_branch"))
         require_equal("base SHA", manifest.get("base_sha"), pointer.get("base_sha"))
-        require_equal(
-            "candidate patch digest",
-            manifest.get("candidate_patch_sha256"),
-            pointer.get("candidate_patch_sha256"),
-        )
-        require_equal(
-            "candidate tree",
-            manifest.get("candidate_tree_oid"),
-            pointer.get("candidate_tree_oid"),
-        )
-        require_equal(
-            "candidate contract fingerprint",
-            manifest.get("contract_fingerprint"),
-            pointer.get("contract_fingerprint"),
-        )
+        require_equal("candidate patch digest", manifest.get("candidate_patch_sha256"), pointer.get("candidate_patch_sha256"))
+        require_equal("candidate tree", manifest.get("candidate_tree_oid"), pointer.get("candidate_tree_oid"))
+        require_equal("candidate contract fingerprint", manifest.get("contract_fingerprint"), pointer.get("contract_fingerprint"))
+        if not isinstance(pointer.get("run_id"), (int, str)) or not str(pointer.get("run_id")).isdigit():
+            raise RecoveryError("pointer run id is invalid")
+        if not isinstance(pointer.get("run_attempt"), (int, str)) or not str(pointer.get("run_attempt")).isdigit():
+            raise RecoveryError("pointer run attempt is invalid")
     except RecoveryError as exc:
         result["reason"] = str(exc)
         dump_json(result, args.output)
@@ -283,10 +346,49 @@ def decide(args: argparse.Namespace) -> int:
         dump_json(result, args.output)
         return 0
 
-    delivery = load_json(args.delivery_run) if args.delivery_run else None
+    verify_state = pointer.get("verification_state") or "skipped"
+    delivery_state = pointer.get("delivery_state") or "skipped"
     verify = load_json(args.verify_run) if args.verify_run else None
+    delivery = load_json(args.delivery_run) if args.delivery_run else None
 
-    if isinstance(delivery, dict) and delivery.get("terminal_status") == "success":
+    try:
+        if verify_state in {"success", "failure"}:
+            if not isinstance(verify, dict):
+                raise RecoveryError("trusted Verify evidence is missing")
+            verify_status = validate_verify_evidence(verify, repository=args.repository, manifest=manifest)
+            require_equal("pointer Verify state", verify_status, verify_state)
+        elif verify_state == "skipped":
+            if verify is not None:
+                raise RecoveryError("Verify evidence exists while pointer state is skipped")
+            verify_status = "skipped"
+        else:
+            raise RecoveryError("pointer Verify state is invalid")
+
+        if delivery_state in {"success", "failure"}:
+            if not isinstance(delivery, dict):
+                raise RecoveryError("trusted Delivery evidence is missing")
+            delivery_status = validate_delivery_evidence(
+                delivery,
+                repository=args.repository,
+                pointer=pointer,
+                manifest=manifest,
+            )
+            if delivery_state == "success" and delivery_status != "success":
+                raise RecoveryError("pointer reports Delivery success but evidence reports failure")
+            # A failure result may mean the evidence upload failed after all Delivery side effects
+            # completed. The trusted evidence itself decides whether delivery is complete.
+        elif delivery_state == "skipped":
+            if delivery is not None:
+                raise RecoveryError("Delivery evidence exists while pointer state is skipped")
+            delivery_status = "skipped"
+        else:
+            raise RecoveryError("pointer Delivery state is invalid")
+    except RecoveryError as exc:
+        result["reason"] = str(exc)
+        dump_json(result, args.output)
+        return 0
+
+    if delivery_status == "success":
         result.update(
             mode="delivery_complete",
             run_worker=False,
@@ -296,22 +398,7 @@ def decide(args: argparse.Namespace) -> int:
         dump_json(result, args.output)
         return 0
 
-    if isinstance(verify, dict) and verify.get("terminal_status") == "success":
-        try:
-            require_equal(
-                "verify patch digest",
-                verify.get("candidate_patch_sha256"),
-                manifest.get("candidate_patch_sha256"),
-            )
-            require_equal(
-                "verify tree",
-                verify.get("candidate_tree_oid"),
-                manifest.get("candidate_tree_oid"),
-            )
-        except RecoveryError as exc:
-            result["reason"] = str(exc)
-            dump_json(result, args.output)
-            return 0
+    if verify_status == "success":
         result.update(
             mode="delivery_retry_only",
             run_worker=False,
@@ -321,7 +408,7 @@ def decide(args: argparse.Namespace) -> int:
         dump_json(result, args.output)
         return 0
 
-    if isinstance(verify, dict) and verify.get("terminal_status") == "failure":
+    if verify_status == "failure":
         result.update(
             mode="recoverable",
             run_worker=True,
@@ -348,6 +435,8 @@ def parser() -> argparse.ArgumentParser:
     fp = sub.add_parser("fingerprint")
     fp.add_argument("--issue-json", required=True)
     fp.add_argument("--comments-json", required=True)
+    fp.add_argument("--base-branch", required=True)
+    fp.add_argument("--verification-command", required=True)
     fp.add_argument("--output")
     fp.set_defaults(func=fingerprint)
 
