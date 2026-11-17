@@ -13,7 +13,8 @@ AGT-058 separates evidence by execution boundary:
 The `mira-external-worker-<run_id>` Artifact contains bounded Worker/Capture evidence such as:
 
 - `worker-run.json` — Worker/Capture run identity, provider/model route, stage outcomes, Recovery mode/source, Candidate pointer/recoverability and permission metadata;
-- `identity.txt`, `issue.json`, trusted-maintainer comment snapshot and `provider-route.json` — durable handoff inputs needed by later trusted stages;\n- `contract.json`, `recovery-state.json`, Recovery context and discovered pointer metadata when applicable;
+- `identity.txt`, `issue.json`, trusted-maintainer comment snapshot and `provider-route.json` — durable handoff inputs needed by later trusted stages;
+- `contract.json`, `recovery-state.json`, Recovery context and discovered pointer metadata when applicable;
 - metadata-only trajectory/session summary;
 - bounded Worker output;
 - `candidate-status.json` plus bounded Candidate capture stdout/stderr;
@@ -84,7 +85,13 @@ Current bounds:
 
 Truncation is explicit in companion metadata rather than silently dropping content.
 
-## Recovery pointer\n\nAGT-059 publishes a machine-readable `github-actions[bot]` comment on the owning Issue for each durable Candidate. The comment points to the pointer run and Candidate-origin run, Candidate Artifact ID/digest, exact base/base branch, deterministic Worker branch, contract fingerprint/ambiguity guard, exact Candidate digest/tree identity, Verify state and Delivery state. It is an index/projection only; underlying Artifacts and Git state remain the facts to validate.\n\nBecause the pointer persists after Artifact retention expires, later runs can report historical-but-unavailable Recovery state instead of pretending no previous work existed.\n\n## Failure semantics
+## Recovery pointer
+
+AGT-059 publishes a machine-readable `github-actions[bot]` comment on the owning Issue for each durable Candidate. The comment points to the pointer run and Candidate-origin run, Candidate Artifact ID/digest, exact base/base branch, deterministic Worker branch, contract fingerprint/ambiguity guard, exact Candidate digest/tree identity, Verify state and Delivery state. It is an index/projection only; underlying Artifacts and Git state remain the facts to validate.
+
+Because the pointer persists after Artifact retention expires, later runs can report historical-but-unavailable Recovery state instead of pretending no previous work existed.
+
+## Failure semantics
 
 AGT-058 no longer compresses the entire pipeline into one terminal status. The Actions job graph and role-specific evidence distinguish:
 
