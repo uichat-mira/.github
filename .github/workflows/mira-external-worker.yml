@@ -1690,6 +1690,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pull_request_url: ${{ steps.pr.outputs.url }}
+      delivery_artifact_name: ${{ steps.delivery_evidence.outputs.artifact_name }}
 
     steps:
       - name: Resolve verified Delivery handoff
@@ -2031,3 +2032,109 @@ jobs:
             ${{ runner.temp }}/mira-delivery/restore-result.json
           if-no-files-found: warn
           retention-days: 14
+
+
+  recovery_index:
+    needs:
+      - worker_capture
+      - verify
+      - delivery
+    if: ${{ always() && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' }}
+    permissions:
+      contents: none
+      issues: write
+      pull-requests: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Publish durable Recovery pointer to owning Issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
+          RECOVERY_SOURCE_RUN_ID: ${{ needs.worker_capture.outputs.recovery_source_run_id }}
+          BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
+          CANDIDATE_ARTIFACT_NAME: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
+          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          AMBIGUITY_GUARD: ${{ needs.worker_capture.outputs.ambiguity_guard }}
+          NORMAL_VERIFY_RESULT: ${{ needs.verify.result }}
+          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
+          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          DELIVERY_RESULT: ${{ needs.delivery.result }}
+          DELIVERY_ARTIFACT: ${{ needs.delivery.outputs.delivery_artifact_name }}
+          DRAFT_PR_URL: ${{ needs.delivery.outputs.pull_request_url }}
+        run: |
+          set -euo pipefail
+
+          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
+            verify_state="success"
+            verify_artifact="$RECOVERED_VERIFY_ARTIFACT"
+          else
+            verify_state="${NORMAL_VERIFY_RESULT:-skipped}"
+            verify_artifact="${NORMAL_VERIFY_ARTIFACT:-}"
+          fi
+
+          delivery_state="${DELIVERY_RESULT:-skipped}"
+
+          export POINTER_JSON
+          POINTER_JSON="$(jq -cn \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson issue "$ISSUE_NUMBER" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg recovery_mode "$RECOVERY_MODE" \
+            --arg recovery_source_run_id "$RECOVERY_SOURCE_RUN_ID" \
+            --arg base_sha "$BASE_SHA" \
+            --arg candidate_artifact_name "$CANDIDATE_ARTIFACT_NAME" \
+            --arg candidate_artifact_id "$CANDIDATE_ARTIFACT_ID" \
+            --arg candidate_artifact_digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --arg candidate_patch_sha256 "$CANDIDATE_PATCH_SHA256" \
+            --arg candidate_tree_oid "$CANDIDATE_TREE_OID" \
+            --arg contract_fingerprint "$CONTRACT_FINGERPRINT" \
+            --arg ambiguity_guard "$AMBIGUITY_GUARD" \
+            --arg verification_state "$verify_state" \
+            --arg verification_artifact_name "$verify_artifact" \
+            --arg delivery_state "$delivery_state" \
+            --arg delivery_artifact_name "$DELIVERY_ARTIFACT" \
+            --arg draft_pr_url "$DRAFT_PR_URL" \
+            '{
+              schema_version: 1,
+              repository: $repository,
+              issue_number: $issue,
+              run_id: ($run_id | tonumber),
+              run_attempt: ($run_attempt | tonumber),
+              recovery_mode: $recovery_mode,
+              recovery_source_run_id: (if $recovery_source_run_id == "" then null else ($recovery_source_run_id | tonumber) end),
+              base_sha: $base_sha,
+              candidate_artifact_name: $candidate_artifact_name,
+              candidate_artifact_id: $candidate_artifact_id,
+              candidate_artifact_digest: $candidate_artifact_digest,
+              candidate_patch_sha256: $candidate_patch_sha256,
+              candidate_tree_oid: $candidate_tree_oid,
+              contract_fingerprint: $contract_fingerprint,
+              ambiguity_guard: $ambiguity_guard,
+              verification_state: $verification_state,
+              verification_artifact_name: $verification_artifact_name,
+              delivery_state: $delivery_state,
+              delivery_artifact_name: $delivery_artifact_name,
+              draft_pr_url: $draft_pr_url
+            }')"
+
+          body="$(cat <<EOF
+          <!-- mira-recovery-candidate:v1
+          $POINTER_JSON
+          -->
+          Mira Worker Recovery pointer · run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT · Candidate `$CANDIDATE_TREE_OID` · Verify $verify_state · Delivery $delivery_state.
+          EOF
+          )"
+
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --method POST \
+            -f body="$body" \
+            >/dev/null
