@@ -169,6 +169,6 @@ The reusable workflow's `timeout_minutes` input is retained for caller compatibi
 
 The reusable workflow input/output contract remains compatible: existing callers still pass `issue_number`, `base_branch`, `verification_command`, timeout, provider/model routing and provider secrets, and still receive Worker branch / Draft PR outputs.
 
-Mira product repositories currently pin immutable historical workflow SHAs. Merging AGT-059 into `uichat-mira/.github@main` therefore does **not** silently switch Desktop, Mobile, Relay, or other callers to the Recovery-enabled engine. Each caller must deliberately repin to an accepted AGT-058 engine SHA.
+Mira product repositories currently pin immutable historical workflow SHAs. Merging AGT-059 into `uichat-mira/.github@main` therefore does **not** silently switch Desktop, Mobile, Relay, or other callers to the Recovery-enabled engine. Each caller must deliberately repin to an accepted AGT-059 engine SHA.
 
 The Organization free-worker wrapper also remains pinned to its existing historical engine until an explicit reviewed repin. AGT-059 additionally requires future callers to grant `actions: read` for prior-run Artifact recovery and `issues: write` for the isolated Recovery pointer job. These permissions are not silently introduced into existing pinned callers.
