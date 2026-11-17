@@ -218,6 +218,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           CURRENT_BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
         run: |
           set -euo pipefail
 
@@ -226,7 +228,7 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/95149cb0a73edcac73d2aff6c5cec078829d3316/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/uichat-mira/.github/a9ae38874af9b524a53e6dd9c3aaceba6484dd48/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
@@ -237,6 +239,8 @@ jobs:
           python3 "${root}/trusted-recovery.py" fingerprint \
             --issue-json "${root}/issue.json" \
             --comments-json "${root}/maintainer-comments.json" \
+            --base-branch "$BASE_BRANCH" \
+            --verification-command "$VERIFICATION_COMMAND" \
             --output "${root}/contract.json"
 
           current_fingerprint="$(jq -r '.fingerprint' "${root}/contract.json")"
@@ -297,60 +301,173 @@ jobs:
           candidate_download_rc="$?"
           set -e
 
-          if test "$candidate_download_rc" -ne 0 || ! test -s "${recovery_root}/candidate/candidate.json"; then
+          if test "$candidate_download_rc" -ne 0 || ! test -s "${recovery_root}/candidate/candidate.json" || ! test -s "${recovery_root}/candidate/candidate.patch"; then
             jq -n \
               --arg run "$source_run_id" \
               --arg artifact "$candidate_artifact_name" \
-              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_unavailable_or_expired",source_run_id:$run,candidate_artifact_name:$artifact}' \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_unavailable_or_expired_or_incomplete",source_run_id:$run,candidate_artifact_name:$artifact}' \
               > "${root}/recovery-state.json"
-            printf 'Historical Candidate pointer exists for run %s, but Artifact %s is unavailable or expired.\n' "$source_run_id" "$candidate_artifact_name" > "${root}/recovery-context.txt"
+            printf 'Historical Candidate pointer exists for run %s, but Artifact %s is unavailable, expired, or incomplete.\n' "$source_run_id" "$candidate_artifact_name" > "${root}/recovery-context.txt"
             echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
             echo "run_worker=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if test -n "$verify_artifact_name"; then
+          pointer_artifact_id="$(jq -r '.candidate_artifact_id // ""' "${recovery_root}/pointer.json")"
+          pointer_artifact_digest="$(jq -r '.candidate_artifact_digest // ""' "${recovery_root}/pointer.json")"
+          set +e
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}/artifacts?per_page=100" \
+            > "${recovery_root}/artifact-list.json" 2> "${recovery_root}/artifact-list.stderr"
+          artifact_list_rc="$?"
+          set -e
+          if test "$artifact_list_rc" -ne 0; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_metadata_unavailable",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          artifact_matches="$(jq -c --arg name "$candidate_artifact_name" '[.artifacts[]? | select(.name == $name)]' "${recovery_root}/artifact-list.json")"
+          if test "$(jq 'length' <<< "$artifact_matches")" -ne 1; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_identity_ambiguous_or_missing",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          actual_artifact_id="$(jq -r '.[0].id' <<< "$artifact_matches")"
+          actual_artifact_digest="$(jq -r '.[0].digest // ""' <<< "$artifact_matches")"
+          actual_artifact_expired="$(jq -r '.[0].expired' <<< "$artifact_matches")"
+          if test "$actual_artifact_id" != "$pointer_artifact_id" || test "$actual_artifact_digest" != "$pointer_artifact_digest" || test "$actual_artifact_expired" != "false"; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_artifact_identity_mismatch_or_expired",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prior_verify_state="$(jq -r '.verification_state // "skipped"' "${recovery_root}/pointer.json")"
+          if test "$prior_verify_state" = "success" || test "$prior_verify_state" = "failure"; then
+            if test -z "$verify_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_artifact_pointer_missing",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             set +e
             gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
               --name "$verify_artifact_name" --dir "${recovery_root}/verify" \
               >"${recovery_root}/verify-download.stdout" 2>"${recovery_root}/verify-download.stderr"
             verify_download_rc="$?"
             set -e
-            if test "$verify_download_rc" -ne 0; then
-              prior_verify_state="$(jq -r '.verification_state // "skipped"' "${recovery_root}/pointer.json")"
-              if test "$prior_verify_state" = "success" || test "$prior_verify_state" = "failure"; then
-                jq -n \
-                  --arg run "$source_run_id" \
-                  --arg artifact "$verify_artifact_name" \
-                  '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_artifact_unavailable_or_expired",source_run_id:$run,verification_artifact_name:$artifact}' \
-                  > "${root}/recovery-state.json"
-                printf 'Historical Verify pointer exists for run %s, but Artifact %s is unavailable or expired.\n' "$source_run_id" "$verify_artifact_name" > "${root}/recovery-context.txt"
-                echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
-                echo "run_worker=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              verify_artifact_name=""
+            if test "$verify_download_rc" -ne 0 || ! test -s "${recovery_root}/verify/verify-run.json"; then
+              jq -n --arg run "$source_run_id" --arg artifact "$verify_artifact_name" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_artifact_unavailable_expired_or_incomplete",source_run_id:$run,verification_artifact_name:$artifact}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
+          elif test "$prior_verify_state" = "skipped"; then
+            if test -n "$verify_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_pointer_state_mismatch",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"verification_pointer_state_invalid",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          if test -n "$delivery_artifact_name"; then
+          prior_delivery_state="$(jq -r '.delivery_state // "skipped"' "${recovery_root}/pointer.json")"
+          if test "$prior_delivery_state" = "success" || test "$prior_delivery_state" = "failure"; then
+            if test -z "$delivery_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_artifact_pointer_missing",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             set +e
             gh run download "$source_run_id" --repo "$GITHUB_REPOSITORY" \
               --name "$delivery_artifact_name" --dir "${recovery_root}/delivery" \
               >"${recovery_root}/delivery-download.stdout" 2>"${recovery_root}/delivery-download.stderr"
             delivery_download_rc="$?"
             set -e
-            prior_delivery_state="$(jq -r '.delivery_state // "skipped"' "${recovery_root}/pointer.json")"
-            if test "$delivery_download_rc" -ne 0 && test "$prior_delivery_state" = "success"; then
-              jq -n \
-                --arg run "$source_run_id" \
-                --arg artifact "$delivery_artifact_name" \
-                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"successful_delivery_evidence_unavailable",source_run_id:$run,delivery_artifact_name:$artifact}' \
+            if test "$delivery_download_rc" -ne 0 || ! test -s "${recovery_root}/delivery/delivery-run.json"; then
+              jq -n --arg run "$source_run_id" --arg artifact "$delivery_artifact_name" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_artifact_unavailable_expired_or_incomplete",source_run_id:$run,delivery_artifact_name:$artifact}' \
                 > "${root}/recovery-state.json"
               echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
               echo "run_worker=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+          elif test "$prior_delivery_state" = "skipped"; then
+            if test -n "$delivery_artifact_name"; then
+              jq -n --arg run "$source_run_id" \
+                '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_pointer_state_mismatch",source_run_id:$run}' \
+                > "${root}/recovery-state.json"
+              echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+              echo "run_worker=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"delivery_pointer_state_invalid",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prior_base_sha="$(jq -r '.base_sha' "${recovery_root}/pointer.json")"
+          prior_contract_fingerprint="$(jq -r '.contract_fingerprint' "${recovery_root}/pointer.json")"
+          exact_root="${recovery_root}/exact-base"
+          set +e
+          git worktree add --detach "$exact_root" "$prior_base_sha" \
+            >"${recovery_root}/worktree.stdout" 2>"${recovery_root}/worktree.stderr"
+          worktree_rc="$?"
+          set -e
+          if test "$worktree_rc" -ne 0; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_base_unavailable",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          python3 "${root}/trusted-candidate.py" restore \
+            --repo "$exact_root" \
+            --candidate-dir "${recovery_root}/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number "$ISSUE_NUMBER" \
+            --expected-base-sha "$prior_base_sha" \
+            --expected-contract-fingerprint "$prior_contract_fingerprint" \
+            >"${recovery_root}/exact-restore.stdout" 2>"${recovery_root}/exact-restore.stderr"
+          exact_restore_rc="$?"
+          set -e
+          git worktree remove --force "$exact_root"
+          if test "$exact_restore_rc" -ne 0; then
+            jq -n --arg run "$source_run_id" \
+              '{schema_version:1,mode:"recovery_failed",run_worker:false,reuse_candidate:false,reason:"candidate_exact_restore_failed",source_run_id:$run}' \
+              > "${root}/recovery-state.json"
+            echo "mode=recovery_failed" >> "$GITHUB_OUTPUT"
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           decision_args=(
@@ -373,42 +490,7 @@ jobs:
           mode="$(jq -r '.mode' "${root}/recovery-state.json")"
           run_worker="$(jq -r '.run_worker' "${root}/recovery-state.json")"
 
-          if test "$mode" = "recoverable" || test "$mode" = "delivery_retry_only"; then
-            exact_root="${recovery_root}/exact-base"
-            set +e
-            git worktree add --detach "$exact_root" "$prior_base_sha" \
-              >"${recovery_root}/worktree.stdout" 2>"${recovery_root}/worktree.stderr"
-            worktree_rc="$?"
-            set -e
-            if test "$worktree_rc" -ne 0; then
-              jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="candidate_base_unavailable"' \
-                "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
-              mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
-              mode="recovery_failed"
-              run_worker="false"
-            else
-              set +e
-              python3 "${root}/trusted-candidate.py" restore \
-              --repo "$exact_root" \
-              --candidate-dir "${recovery_root}/candidate" \
-              --expected-repository "$GITHUB_REPOSITORY" \
-              --expected-issue-number "$ISSUE_NUMBER" \
-              --expected-base-sha "$prior_base_sha" \
-              --expected-contract-fingerprint "$current_fingerprint" \
-              >"${recovery_root}/exact-restore.stdout" 2>"${recovery_root}/exact-restore.stderr"
-              exact_restore_rc="$?"
-              set -e
-              git worktree remove --force "$exact_root"
 
-              if test "$exact_restore_rc" -ne 0; then
-                jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="candidate_exact_restore_failed"' \
-                  "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
-                mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
-                mode="recovery_failed"
-                run_worker="false"
-              fi
-            fi
-          fi
 
           if test "$mode" = "recoverable"; then
             if test "$prior_base_sha" = "$CURRENT_BASE_SHA"; then
@@ -489,7 +571,7 @@ jobs:
 
       - name: Enforce Recovery fail-closed boundary
         id: recovery_gate
-        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' || steps.recovery.outputs.mode == 'delivery_complete' }}
+        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' }}
         shell: bash
         env:
           RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
@@ -498,6 +580,12 @@ jobs:
           echo "::error::Recovery stopped before model execution: ${RECOVERY_MODE}."
           cat "${RUNNER_TEMP}/mira-worker/recovery-state.json" >&2
           exit 1
+
+      - name: Report already delivered Candidate
+        if: ${{ steps.recovery.outputs.mode == 'delivery_complete' }}
+        shell: bash
+        run: |
+          echo "::notice::The latest trusted Candidate is already delivered. No Worker, Verify, or Delivery work is required."
 
       - name: Resolve run-scoped Worker provider route
         if: ${{ steps.recovery.outputs.run_worker == 'true' }}
@@ -1217,7 +1305,10 @@ jobs:
         shell: bash
         env:
           RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
           CURRENT_BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          CURRENT_BASE_BRANCH: ${{ inputs.base_branch }}
+          CURRENT_WORKER_BRANCH: ${{ steps.identity.outputs.worker_branch }}
           RECOVERY_SOURCE_RUN_ID: ${{ steps.recovery.outputs.source_run_id }}
           CONTRACT_FINGERPRINT: ${{ steps.recovery.outputs.contract_fingerprint }}
           AMBIGUITY_GUARD: ${{ steps.recovery.outputs.ambiguity_guard }}
@@ -1248,6 +1339,10 @@ jobs:
             test -s "$manifest"
             test -s "$verify_run"
             candidate_base="$(jq -r '.base_sha' "$manifest")"
+            candidate_origin_run_id="$(jq -r '.run_id' "$manifest")"
+            candidate_origin_run_attempt="$(jq -r '.run_attempt' "$manifest")"
+            candidate_base_branch="$(jq -r '.base_branch' "$manifest")"
+            candidate_worker_branch="feat/worker-${ISSUE_NUMBER}-${candidate_origin_run_id}-${candidate_origin_run_attempt}"
             patch="$(jq -r '.candidate_patch_sha256' "$manifest")"
             tree="$(jq -r '.candidate_tree_oid' "$manifest")"
             contract="$(jq -r '.contract_fingerprint' "$manifest")"
@@ -1260,6 +1355,10 @@ jobs:
 
             {
               echo "candidate_base_sha=$candidate_base"
+              echo "candidate_origin_run_id=$candidate_origin_run_id"
+              echo "candidate_origin_run_attempt=$candidate_origin_run_attempt"
+              echo "candidate_base_branch=$candidate_base_branch"
+              echo "worker_branch=$candidate_worker_branch"
               echo "candidate_artifact_name=mira-external-worker-candidate-${{ inputs.issue_number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
               echo "candidate_artifact_id=${RECOVERED_CANDIDATE_ID:-}"
               echo "candidate_artifact_digest=${RECOVERED_CANDIDATE_DIGEST:-}"
@@ -1288,6 +1387,10 @@ jobs:
           else
             {
               echo "candidate_base_sha=${CURRENT_BASE_SHA:-}"
+              echo "candidate_origin_run_id=${GITHUB_RUN_ID}"
+              echo "candidate_origin_run_attempt=${GITHUB_RUN_ATTEMPT}"
+              echo "candidate_base_branch=${CURRENT_BASE_BRANCH:-}"
+              echo "worker_branch=${CURRENT_WORKER_BRANCH:-}"
               echo "candidate_artifact_name=${NORMAL_CANDIDATE_NAME:-}"
               echo "candidate_artifact_id=${NORMAL_CANDIDATE_ID:-}"
               echo "candidate_artifact_digest=${NORMAL_CANDIDATE_DIGEST:-}"
@@ -1538,6 +1641,7 @@ jobs:
       candidate_tree_oid: ${{ steps.restore.outputs.tree_oid }}
       contract_fingerprint: ${{ steps.restore.outputs.contract_fingerprint }}
       verification_artifact_name: ${{ steps.verify_meta.outputs.artifact_name }}
+      terminal_status: ${{ steps.verify_meta.outputs.terminal_status }}
 
     steps:
       - name: Checkout exact Candidate base
@@ -1682,6 +1786,7 @@ jobs:
           import json, os
           from pathlib import Path
           ok = os.getenv("RESTORE_OUTCOME") == "success" and os.getenv("DIFF_CHECK_OUTCOME") == "success" and os.getenv("VERIFY_OUTCOME") == "success"
+          print("terminal_status=" + ("success" if ok else "failure"), file=open(os.environ["GITHUB_OUTPUT"], "a"))
           payload = {
               "schema_version": 1,
               "job_role": "verify",
@@ -1737,7 +1842,7 @@ jobs:
     needs:
       - worker_capture
       - verify
-    if: ${{ always() && needs.worker_capture.result == 'success' && ((needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only') || needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only') }}
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && ((needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only') || needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only') }}
     permissions:
       contents: write
       issues: none
@@ -1746,6 +1851,7 @@ jobs:
     outputs:
       pull_request_url: ${{ steps.pr.outputs.url }}
       delivery_artifact_name: ${{ steps.delivery_evidence.outputs.artifact_name }}
+      terminal_status: ${{ steps.delivery_evidence.outputs.terminal_status }}
 
     steps:
       - name: Resolve verified Delivery handoff
@@ -1888,28 +1994,49 @@ jobs:
             echo "tree_oid=$manifest_tree"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push exact verified Candidate
+      - name: Load trusted idempotent Delivery primitive
+        id: delivery_tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
+          mkdir -p "$root"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/ff4022ca1e16e3437184138442cb57dfc71cdbb9/.github/scripts/worker-candidate/delivery.py" \
+            -o "$root/trusted-delivery.py"
+          test -s "$root/trusted-delivery.py"
+
+      - name: Commit/push or reuse exact verified Candidate branch
         id: commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
           set -euo pipefail
+          root="${RUNNER_TEMP}/mira-delivery"
           git config user.name "mira-agent-worker[bot]"
           git config user.email "mira-agent-worker[bot]@users.noreply.github.com"
-          git commit -m "agent: implement issue #${ISSUE_NUMBER}"
-
-          commit_tree_oid="$(git rev-parse HEAD^{tree})"
-          test "$commit_tree_oid" = "$EXPECTED_TREE_OID"
-
           gh auth setup-git
-          git push --set-upstream origin "HEAD:${WORKER_BRANCH}"
 
-          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "commit_tree_oid=$commit_tree_oid" >> "$GITHUB_OUTPUT"
+          python3 "$root/trusted-delivery.py" ensure-branch \
+            --repo "$GITHUB_WORKSPACE" \
+            --branch "$WORKER_BRANCH" \
+            --base-sha "$EXPECTED_BASE_SHA" \
+            --tree-oid "$EXPECTED_TREE_OID" \
+            --commit-message "agent: implement issue #${ISSUE_NUMBER}" \
+            > "$root/delivery-branch.json"
+
+          commit_sha="$(jq -r '.commit_sha' "$root/delivery-branch.json")"
+          commit_tree_oid="$(jq -r '.commit_tree_oid' "$root/delivery-branch.json")"
+          test "$commit_tree_oid" = "$EXPECTED_TREE_OID"
+          {
+            echo "commit_sha=$commit_sha"
+            echo "commit_tree_oid=$commit_tree_oid"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create Draft PR with durable handoff
         id: pr
@@ -1981,13 +2108,14 @@ jobs:
           (root / "pr-body.md").write_text(body)
           PY
 
-          pr_url="$(gh pr create \
-            --draft \
+          python3 "$root/trusted-delivery.py" ensure-pr \
+            --branch "$WORKER_BRANCH" \
             --base "$BASE_BRANCH" \
-            --head "$WORKER_BRANCH" \
+            --head-sha "${{ steps.commit.outputs.commit_sha }}" \
             --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}" \
-            --body-file "$root/pr-body.md")"
-
+            --body-file "$root/pr-body.md" \
+            > "$root/pr-resolution.json"
+          pr_url="$(jq -r '.url' "$root/pr-resolution.json")"
           test -n "$pr_url"
           echo "url=$pr_url" >> "$GITHUB_OUTPUT"
 
@@ -1999,7 +2127,7 @@ jobs:
           PR_URL: ${{ steps.pr.outputs.url }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
-          EXPECTED_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          EXPECTED_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           COMMIT_SHA: ${{ steps.commit.outputs.commit_sha }}
         run: |
           set -euo pipefail
@@ -2047,6 +2175,7 @@ jobs:
           }
           failed = next((k for k, v in stages.items() if v == "failure"), None)
           ok = not failed and all(v in {"success", "skipped"} for v in stages.values())
+          print("terminal_status=" + ("success" if ok else "failure"), file=open(os.environ["GITHUB_OUTPUT"], "a"))
           payload = {
               "schema_version": 1,
               "job_role": "delivery",
@@ -2111,6 +2240,10 @@ jobs:
           RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
           RECOVERY_SOURCE_RUN_ID: ${{ needs.worker_capture.outputs.recovery_source_run_id }}
           BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+          BASE_BRANCH: ${{ needs.worker_capture.outputs.candidate_base_branch }}
+          WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
+          CANDIDATE_ORIGIN_RUN_ID: ${{ needs.worker_capture.outputs.candidate_origin_run_id }}
+          CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ needs.worker_capture.outputs.candidate_origin_run_attempt }}
           CANDIDATE_ARTIFACT_NAME: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
           CANDIDATE_ARTIFACT_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
           CANDIDATE_ARTIFACT_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
@@ -2122,10 +2255,10 @@ jobs:
           PROVIDER_PROFILE: ${{ needs.worker_capture.outputs.provider_profile }}
           PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
-          NORMAL_VERIFY_RESULT: ${{ needs.verify.result }}
+          NORMAL_VERIFY_RESULT: ${{ needs.verify.outputs.terminal_status }}
           NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
           RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
-          DELIVERY_RESULT: ${{ needs.delivery.result }}
+          DELIVERY_RESULT: ${{ needs.delivery.outputs.terminal_status }}
           DELIVERY_ARTIFACT: ${{ needs.delivery.outputs.delivery_artifact_name }}
           DRAFT_PR_URL: ${{ needs.delivery.outputs.pull_request_url }}
         run: |
@@ -2150,6 +2283,10 @@ jobs:
             --arg recovery_mode "$RECOVERY_MODE" \
             --arg recovery_source_run_id "$RECOVERY_SOURCE_RUN_ID" \
             --arg base_sha "$BASE_SHA" \
+            --arg base_branch "$BASE_BRANCH" \
+            --arg worker_branch "$WORKER_BRANCH" \
+            --arg candidate_origin_run_id "$CANDIDATE_ORIGIN_RUN_ID" \
+            --arg candidate_origin_run_attempt "$CANDIDATE_ORIGIN_RUN_ATTEMPT" \
             --arg candidate_artifact_name "$CANDIDATE_ARTIFACT_NAME" \
             --arg candidate_artifact_id "$CANDIDATE_ARTIFACT_ID" \
             --arg candidate_artifact_digest "$CANDIDATE_ARTIFACT_DIGEST" \
@@ -2175,6 +2312,10 @@ jobs:
               recovery_mode: $recovery_mode,
               recovery_source_run_id: (if $recovery_source_run_id == "" then null else ($recovery_source_run_id | tonumber) end),
               base_sha: $base_sha,
+              base_branch: $base_branch,
+              worker_branch: $worker_branch,
+              candidate_origin_run_id: ($candidate_origin_run_id | tonumber),
+              candidate_origin_run_attempt: ($candidate_origin_run_attempt | tonumber),
               candidate_artifact_name: $candidate_artifact_name,
               candidate_artifact_id: $candidate_artifact_id,
               candidate_artifact_digest: $candidate_artifact_digest,
