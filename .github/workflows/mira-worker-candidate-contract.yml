@@ -25,12 +25,17 @@ jobs:
         run: |
           python3 -m py_compile \
             .github/scripts/worker-candidate/candidate.py \
-            .github/scripts/worker-candidate/fixture.py
+            .github/scripts/worker-candidate/fixture.py \
+            .github/scripts/worker-candidate/recovery.py \
+            .github/scripts/worker-candidate/recovery_fixture.py
 
       - name: Run Candidate round-trip and rejection fixtures
         run: python3 .github/scripts/worker-candidate/fixture.py
 
-      - name: Assert production split-job topology and permissions
+      - name: Run Recovery contract fixtures
+        run: python3 .github/scripts/worker-candidate/recovery_fixture.py
+
+      - name: Assert production split-job topology, Recovery and permissions
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -48,11 +53,21 @@ jobs:
           assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
           assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url }}" in workflow
 
+          assert "actions: read" in worker
           assert "contents: read" in worker
           assert "issues: read" in worker
           assert "pull-requests: none" in worker
           assert "contents: write" not in worker
           assert "pull-requests: write" not in worker
+          assert "Discover and prepare Candidate Recovery" in worker
+          assert "mira-recovery-candidate:v1" not in worker
+          assert "contract_drift" in worker
+          assert "recovery_failed" in worker
+          assert "delivery_retry_only" in worker
+          assert "candidate_artifact_unavailable_or_expired" in worker
+          assert "base_advanced_clean_3way" in worker
+          assert "base_advanced_3way_conflict" in worker
+          assert "Re-publish verified Candidate for Delivery-only retry" in worker
           assert "Capture durable Candidate" in worker
           assert "Run trusted repository verification" not in worker
           assert "Commit and push exact verified Candidate" not in worker
@@ -72,6 +87,8 @@ jobs:
           assert "Require verified Candidate" in verify
 
           assert "needs:\n      - worker_capture\n      - verify" in delivery
+          assert "delivery_retry_only" in delivery
+          assert "Resolve verified Delivery handoff" in delivery
           assert "contents: write" in delivery
           assert "issues: none" in delivery
           assert "pull-requests: write" in delivery
@@ -87,6 +104,14 @@ jobs:
 
           assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit and push exact verified Candidate")
           assert delivery.index("Commit and push exact verified Candidate") < delivery.index("Create Draft PR with durable handoff")
+
+          recovery_index = workflow[workflow.index("\n  recovery_index:"):]
+          assert "issues: write" in recovery_index
+          assert "contents: none" in recovery_index
+          assert "mira-recovery-candidate:v1" in recovery_index
+          assert "candidate_artifact_id" in recovery_index
+          assert "contract_fingerprint" in recovery_index
+          assert "ambiguity_guard" in recovery_index
           PY
 
   fixture-worker-capture:
@@ -469,3 +494,94 @@ jobs:
           git config user.email "fixture@example.invalid"
           git commit -qm "fixture: exact verified candidate"
           test "$(git rev-parse HEAD^{tree})" = "$manifest_tree"
+
+
+  fixture-recovery-base-advance:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Recovery tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prove clean 3-way continuation and conflict fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/agt-059-base"
+          mkdir -p "$root"
+
+          make_repo() {
+            local repo="$1"
+            mkdir -p "$repo"
+            git -C "$repo" init -q
+            git -C "$repo" config user.name "Mira Recovery Fixture"
+            git -C "$repo" config user.email "fixture@example.invalid"
+            printf 'base\n' > "$repo/work.txt"
+            printf 'stable\n' > "$repo/unrelated.txt"
+            git -C "$repo" add -A
+            git -C "$repo" commit -qm base
+          }
+
+          # Candidate from base, then base advances in a non-conflicting file.
+          clean="$root/clean"
+          make_repo "$clean"
+          base_sha="$(git -C "$clean" rev-parse HEAD)"
+          printf 'candidate\n' > "$clean/work.txt"
+          python3 .github/scripts/worker-candidate/candidate.py capture \
+            --repo "$clean" \
+            --output "$root/clean-candidate" \
+            --repository "uichat-mira/recovery-fixture" \
+            --issue-number 59 \
+            --run-id 1 \
+            --run-attempt 1 \
+            --base-branch main \
+            --base-sha "$base_sha" \
+            --contract-fingerprint "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+            --worker-outcome failure
+          git -C "$clean" reset --hard -q "$base_sha"
+          printf 'advanced\n' > "$clean/unrelated.txt"
+          git -C "$clean" add -A
+          git -C "$clean" commit -qm "advance unrelated"
+          current_sha="$(git -C "$clean" rev-parse HEAD)"
+          git -C "$clean" merge-base --is-ancestor "$base_sha" "$current_sha"
+          git -C "$clean" apply --3way --index --whitespace=nowarn -- "$root/clean-candidate/candidate.patch"
+          git -C "$clean" reset -q
+          test "$(cat "$clean/work.txt")" = candidate
+          test "$(cat "$clean/unrelated.txt")" = advanced
+          git -C "$clean" diff --check
+          echo "PASS Recovery base advance: clean 3-way continuation"
+
+          # Candidate and current base both change the same line differently.
+          conflict="$root/conflict"
+          make_repo "$conflict"
+          conflict_base="$(git -C "$conflict" rev-parse HEAD)"
+          printf 'candidate-side\n' > "$conflict/work.txt"
+          python3 .github/scripts/worker-candidate/candidate.py capture \
+            --repo "$conflict" \
+            --output "$root/conflict-candidate" \
+            --repository "uichat-mira/recovery-fixture" \
+            --issue-number 59 \
+            --run-id 2 \
+            --run-attempt 1 \
+            --base-branch main \
+            --base-sha "$conflict_base" \
+            --contract-fingerprint "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+            --worker-outcome failure
+          git -C "$conflict" reset --hard -q "$conflict_base"
+          printf 'current-side\n' > "$conflict/work.txt"
+          git -C "$conflict" add -A
+          git -C "$conflict" commit -qm "advance conflicting"
+          set +e
+          git -C "$conflict" apply --3way --index --whitespace=nowarn -- "$root/conflict-candidate/candidate.patch" \
+            >"$root/conflict.stdout" 2>"$root/conflict.stderr"
+          conflict_rc="$?"
+          set -e
+          test "$conflict_rc" -ne 0
+          git -C "$conflict" reset --hard -q HEAD
+          git -C "$conflict" clean -fdq
+          test "$(cat "$conflict/work.txt")" = current-side
+          echo "PASS Recovery base advance: conflict fails closed"
