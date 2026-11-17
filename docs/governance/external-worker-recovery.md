@@ -14,7 +14,7 @@ Each run that leaves a durable Candidate publishes one machine-readable pointer 
 -->
 ```
 
-The pointer is an index only. It records run/artifact identity, exact base, Candidate patch/tree identity, contract fingerprint, ambiguity guard, Verify state and Delivery state. Recovery must still download and validate the underlying Candidate/evidence before reuse.
+The pointer is an index only. It records the pointer run and Candidate-origin run separately, artifact ID/name/digest, exact base and base branch, deterministic Worker branch, Candidate patch/tree identity, contract fingerprint, ambiguity guard, provider provenance, Verify state and Delivery state. Recovery must still download and validate the underlying Candidate/evidence before reuse.
 
 Only pointers authored by `github-actions[bot]` are trusted. User-authored comments that imitate the marker are ignored.
 
@@ -29,7 +29,11 @@ The canonical fingerprint contains:
 - Issue number;
 - normalized Issue title;
 - normalized Issue body;
-- eligible trusted maintainer contract amendments.
+- eligible trusted maintainer contract amendments;
+- explicit delivery base branch name;
+- SHA-256 of the caller-owned verification command (the command itself is not copied into the pointer).
+
+This keeps a Candidate from being silently reused after the caller changes the target branch or the trusted verification profile. The current exact base commit remains a separate Candidate identity field so ordinary advancement of the same base branch can use the controlled three-way path.
 
 Normalization converts CRLF/CR to LF, removes trailing whitespace per line, and trims leading/trailing blank lines.
 
@@ -51,7 +55,7 @@ Pure status/evidence comments may use:
 
 or a supported status/evidence prefix such as `Status:`, `Progress:`, `Evidence:`, `状态：`, `进展：`, or `证据：`.
 
-Comments that cannot be classified deterministically do not silently disappear. Their normalized content is hashed into a separate `ambiguity_guard`. Recovery requires both the contract fingerprint and ambiguity guard to match the prior pointer. Therefore an ambiguous trusted comment may conservatively prevent Candidate reuse, but it cannot silently authorize reuse under a potentially changed contract.
+Comments that cannot be classified deterministically do not silently disappear. Their normalized content is hashed into a separate `ambiguity_guard`. Recovery requires both the execution-aware contract fingerprint and ambiguity guard to match the prior pointer. Therefore an ambiguous trusted comment may conservatively prevent Candidate reuse, but it cannot silently authorize reuse under a potentially changed contract.
 
 ## Recovery states
 
@@ -62,7 +66,7 @@ The machine state distinguishes:
 - `contract_drift` — prior Candidate exists but current contract fingerprint/ambiguity guard differs; old Candidate is not restored and the Worker starts from the current explicit base with drift recorded;
 - `recovery_failed` — prior history exists but Artifact/evidence/identity/base restoration cannot be trusted; model execution is blocked;
 - `delivery_retry_only` — prior Verify passed for the exact Candidate but Delivery did not complete; Worker/provider setup and Verify are skipped and only trusted Delivery is retried;
-- `delivery_complete` — prior Candidate is already recorded as successfully delivered; the new run stops rather than creating duplicate work.
+- `delivery_complete` — prior Candidate is already recorded as successfully delivered; the new run exits as a successful no-op rather than creating duplicate work.
 
 ## Exact-base and advanced-base behavior
 
@@ -72,8 +76,8 @@ For same-base continuation, Recovery performs the normal Candidate restore contr
 
 When the explicit delivery base has advanced:
 
-1. Recovery first proves that the historical Candidate still reconstructs exactly on its original base.
-2. The prior base must be an ancestor of the current explicit base.
+1. Recovery first validates the historical Artifact ID/digest and proves that the Candidate reconstructs exactly on its original base, even when the Issue contract has drifted and the Candidate will not be reused.
+2. The prior base must be an ancestor of the current explicit base and the explicit base branch must still match.
 3. Recovery attempts a deterministic Git `apply --3way --index` of the validated Candidate patch onto the current base.
 4. A clean three-way application becomes `recoverable` with `base_strategy=base_advanced_clean_3way`.
 5. Any conflict becomes `recovery_failed` with `base_strategy=conflict_fail_closed`; the workspace is reset to the current base and the model is not started.
@@ -82,6 +86,8 @@ When the explicit delivery base has advanced:
 Recovery never silently rebases a conflicting Candidate.
 
 ## Verification-failure continuation
+
+Verify and Delivery evidence are checked against repository, run/attempt, exact base, Candidate patch/tree and contract identity before their terminal status can influence Recovery. A missing, incomplete, contradictory or mismatched required evidence Artifact fails closed.
 
 If the prior Candidate reached Verify and Verify failed, the next Worker receives:
 
@@ -103,10 +109,13 @@ When prior Verify evidence says PASS for the same Candidate identity and Deliver
 - model execution is skipped;
 - a fresh Verify is skipped;
 - the prior Candidate and trusted Verify evidence are downloaded, revalidated, and re-published into the new run;
-- provider/profile/model-route provenance is carried from the trusted Recovery pointer (with manifest fallback for older pointers);
+- the prior Delivery evidence is also required after an attempted Delivery, because it is needed to distinguish a pre-side-effect failure from a push/PR that succeeded before the runner reported failure;
+- provider/profile/model-route provenance is carried from the trusted Recovery pointer (with Candidate manifest fallback where available);
+- Delivery uses a deterministic branch derived from the Candidate-origin run/attempt, reuses an existing branch only when its parent/base and tree exactly match, and reuses an existing PR only when it is the exact open Draft PR for that Candidate;
+- mismatched existing branches/PRs or unavailable evidence fail closed rather than creating a duplicate delivery;
 - Delivery restores the exact verified Candidate again and retries only Git branch/commit/Draft-PR delivery.
 
-This makes transient GitHub Delivery failure independent from model cost.
+This makes transient GitHub Delivery failure independent from model cost while keeping retries idempotent across partial push/PR side effects.
 
 ## Retention and unavailable history
 
