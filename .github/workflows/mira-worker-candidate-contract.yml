@@ -130,6 +130,11 @@ jobs:
           assert "RECOVERED_VERIFY_UPLOAD_OUTCOME" in worker
           assert "verify_evidence_republish" in worker
           assert "recovery_mode != 'delivery_complete'" in recovery_index
+          assert "timeout-minutes: ${{ inputs.timeout_minutes }}" not in workflow
+          assert "default: 60" in workflow
+          assert "SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}" in worker
+          assert "NOT a hard deadline" in worker
+          assert '--head-owner "$GITHUB_REPOSITORY_OWNER"' in delivery
 
           assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit/push or reuse exact verified Candidate branch")
           assert delivery.index("Commit/push or reuse exact verified Candidate branch") < delivery.index("Create Draft PR with durable handoff")
