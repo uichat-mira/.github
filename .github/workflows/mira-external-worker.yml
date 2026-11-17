@@ -1644,7 +1644,7 @@ jobs:
               },
               "terminal_status": "success" if ok else "failure",
               "verification_artifact": os.getenv("ARTIFACT_NAME"),
-              "github_permissions": {"actions": "read", "contents": "read", "issues": "none", "pull_requests": "none"},
+              "github_permissions": {"actions": "none", "contents": "read", "issues": "none", "pull_requests": "none"},
               "provider_credentials_present": False,
               "github_mutation_authority": False,
           }
@@ -1682,6 +1682,7 @@ jobs:
     needs:
       - worker_capture
       - verify
+    if: ${{ always() && needs.worker_capture.result == 'success' && ((needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only') || needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only') }}
     permissions:
       contents: write
       issues: none
@@ -1691,6 +1692,43 @@ jobs:
       pull_request_url: ${{ steps.pr.outputs.url }}
 
     steps:
+      - name: Resolve verified Delivery handoff
+        id: verified_handoff
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
+          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
+          NORMAL_PATCH: ${{ needs.verify.outputs.candidate_patch_sha256 }}
+          NORMAL_TREE: ${{ needs.verify.outputs.candidate_tree_oid }}
+          NORMAL_CONTRACT: ${{ needs.verify.outputs.contract_fingerprint }}
+          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          RECOVERED_PATCH: ${{ needs.worker_capture.outputs.verified_patch_sha256 }}
+          RECOVERED_TREE: ${{ needs.worker_capture.outputs.verified_tree_oid }}
+          RECOVERED_CONTRACT: ${{ needs.worker_capture.outputs.verified_contract_fingerprint }}
+        run: |
+          set -euo pipefail
+          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
+            artifact="$RECOVERED_VERIFY_ARTIFACT"
+            patch="$RECOVERED_PATCH"
+            tree="$RECOVERED_TREE"
+            contract="$RECOVERED_CONTRACT"
+          else
+            artifact="$NORMAL_VERIFY_ARTIFACT"
+            patch="$NORMAL_PATCH"
+            tree="$NORMAL_TREE"
+            contract="$NORMAL_CONTRACT"
+          fi
+          test -n "$artifact"
+          test -n "$patch"
+          test -n "$tree"
+          test -n "$contract"
+          {
+            echo "verification_artifact_name=$artifact"
+            echo "candidate_patch_sha256=$patch"
+            echo "candidate_tree_oid=$tree"
+            echo "contract_fingerprint=$contract"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout exact verified Candidate base
         id: checkout
         uses: actions/checkout@v4
@@ -1717,7 +1755,7 @@ jobs:
         id: verify_handoff
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.verify.outputs.verification_artifact_name }}
+          name: ${{ steps.verified_handoff.outputs.verification_artifact_name }}
           path: ${{ runner.temp }}/mira-delivery/verify
 
       - name: Load trusted Candidate restore primitive
@@ -1760,9 +1798,9 @@ jobs:
         env:
           WORKER_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
           WORKER_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
-          VERIFY_PATCH_SHA256: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          VERIFY_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
-          VERIFY_CONTRACT_FINGERPRINT: ${{ needs.verify.outputs.contract_fingerprint }}
+          VERIFY_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          VERIFY_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
+          VERIFY_CONTRACT_FINGERPRINT: ${{ steps.verified_handoff.outputs.contract_fingerprint }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
         run: |
           set -euo pipefail
@@ -1801,7 +1839,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
-          EXPECTED_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          EXPECTED_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
           set -euo pipefail
           git config user.name "mira-agent-worker[bot]"
@@ -1832,8 +1870,8 @@ jobs:
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
-          CANDIDATE_PATCH_SHA256: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          CANDIDATE_TREE_OID: ${{ needs.verify.outputs.candidate_tree_oid }}
+          CANDIDATE_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-delivery"
@@ -1845,8 +1883,10 @@ jobs:
           from pathlib import Path
 
           root = Path(os.environ["RUNNER_TEMP"]) / "mira-delivery"
-          worker_output = (root / "worker" / "worker-output.txt").read_text(errors="replace")[:12000]
-          verification_output = (root / "verify" / "verification.log").read_text(errors="replace")[:12000]
+          worker_path = root / "worker" / "worker-output.txt"
+          verify_path = root / "verify" / "verification.log"
+          worker_output = worker_path.read_text(errors="replace")[:12000] if worker_path.exists() else "(Delivery-only retry: model was not rerun.)"
+          verification_output = verify_path.read_text(errors="replace")[:12000] if verify_path.exists() else "(Prior trusted Verify evidence reused.)"
 
           body = f"""## Mira external Worker handoff
 
@@ -1922,8 +1962,8 @@ jobs:
         env:
           BASE_SHA: ${{ needs.worker_capture.outputs.base_sha }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
-          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
-          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          CANDIDATE_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
