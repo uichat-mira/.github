@@ -87,6 +87,8 @@ jobs:
       candidate_artifact_name: ${{ steps.handoff.outputs.candidate_artifact_name }}
       candidate_artifact_id: ${{ steps.handoff.outputs.candidate_artifact_id }}
       candidate_artifact_digest: ${{ steps.handoff.outputs.candidate_artifact_digest }}
+      recovered_candidate_upload_outcome: ${{ steps.recovered_candidate_upload.outcome }}
+      recovered_verify_upload_outcome: ${{ steps.recovered_verify_upload.outcome }}
       candidate_patch_sha256: ${{ steps.handoff.outputs.candidate_patch_sha256 }}
       candidate_tree_oid: ${{ steps.handoff.outputs.candidate_tree_oid }}
       contract_fingerprint: ${{ steps.handoff.outputs.contract_fingerprint }}
@@ -2305,7 +2307,7 @@ jobs:
       - worker_capture
       - verify
       - delivery
-    if: ${{ always() && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' }}
+    if: ${{ always() && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' && (needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' || (needs.worker_capture.outputs.recovered_candidate_upload_outcome == 'success' && needs.worker_capture.outputs.recovered_verify_upload_outcome == 'success')) }}
     permissions:
       contents: none
       issues: write
