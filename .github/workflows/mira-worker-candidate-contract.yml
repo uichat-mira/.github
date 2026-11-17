@@ -45,10 +45,12 @@ jobs:
           worker_start = workflow.index("  worker_capture:")
           verify_start = workflow.index("\n  verify:", worker_start)
           delivery_start = workflow.index("\n  delivery:", verify_start)
+          recovery_index_start = workflow.index("\n  recovery_index:", delivery_start)
 
           worker = workflow[worker_start:verify_start]
           verify = workflow[verify_start:delivery_start]
-          delivery = workflow[delivery_start:]
+          delivery = workflow[delivery_start:recovery_index_start]
+          recovery_index = workflow[recovery_index_start:]
 
           assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
           assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url }}" in workflow
@@ -92,6 +94,8 @@ jobs:
           assert "needs.worker_capture.outputs.candidate_base_sha" in delivery
           assert "contents: write" in delivery
           assert "issues: none" in delivery
+          assert "issues: write" not in delivery
+          assert "actions: read" not in delivery
           assert "pull-requests: write" in delivery
           assert "secrets." not in delivery
           assert "opencode run" not in delivery
@@ -106,7 +110,6 @@ jobs:
           assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit and push exact verified Candidate")
           assert delivery.index("Commit and push exact verified Candidate") < delivery.index("Create Draft PR with durable handoff")
 
-          recovery_index = workflow[workflow.index("\n  recovery_index:"):]
           assert "issues: write" in recovery_index
           assert "contents: none" in recovery_index
           assert "mira-recovery-candidate:v1" in recovery_index
