@@ -1270,13 +1270,19 @@ jobs:
               echo "verified_patch_sha256=$verify_patch"
               echo "verified_tree_oid=$verify_tree"
               echo "verified_contract_fingerprint=$contract"
-              echo "provider=$(jq -r '.provider // .provider_fallback // ""' "$root/recovery/pointer.json" 2>/dev/null || jq -r '.provider // ""' "$manifest")"
-              echo "provider_profile=$(jq -r '.provider_profile // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
-              echo "provider_registry_ref=$(jq -r '.provider_registry_ref // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              provider="$(jq -r '.provider // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              provider_profile="$(jq -r '.provider_profile // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              provider_registry_ref="$(jq -r '.provider_registry_ref // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
               model_route="$(jq -r '.model_route // ""' "$root/recovery/pointer.json" 2>/dev/null || true)"
+              if test -z "$provider"; then
+                provider="$(jq -r '.provider // ""' "$manifest")"
+              fi
               if test -z "$model_route"; then
                 model_route="$(jq -r 'if (.provider // "") != "" and (.model // "") != "" then (.provider + "/" + .model) else "" end' "$manifest")"
               fi
+              echo "provider=$provider"
+              echo "provider_profile=$provider_profile"
+              echo "provider_registry_ref=$provider_registry_ref"
               echo "model_route=$model_route"
             } >> "$GITHUB_OUTPUT"
           else
@@ -1521,7 +1527,7 @@ jobs:
 
   verify:
     needs: worker_capture
-    if: ${{ needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' }}
+    if: ${{ needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' }}
     permissions:
       contents: read
       issues: none
