@@ -13,7 +13,10 @@ The reusable Worker currently uploads:
 - `session-summary.json` — whether a structured OpenCode export was available, resolved session ID, event count, event bound, and truncation state.
 - `worker-output.txt` and `worker-output-meta.json` — bounded Worker handoff/output plus byte/truncation metadata.
 - `verification.log` and `verification-meta.json` — bounded trusted verification output plus byte/truncation metadata.
+- `candidate-status.json` and bounded Candidate capture stdout/stderr — whether Candidate capture was attempted, unavailable, rejected, captured, or failed, without duplicating the Candidate patch into diagnostic evidence.
 - `changed-files.txt`, `committed-files.txt`, and `diff-stat.txt` — bounded repository mutation summaries without persisting a full repository snapshot.
+
+When a recoverable Candidate is captured, it is uploaded as a **separate immutable Actions Artifact** named for the run/attempt. That Artifact contains `candidate.patch` and `candidate.json`; it is not embedded into the diagnostic evidence package. `worker-run.json` records the Candidate state, patch/tree identity, Artifact ID/URL/digest, upload outcome, recoverability, and retention.
 
 Exact filenames are an implementation detail. The durable contract is that equivalent evidence remains machine-readable, bounded, attributable to one immutable run identity, and useful on both success and failure paths.
 
@@ -54,7 +57,8 @@ Current bounds:
 - Worker persisted output: 120 KB maximum.
 - Trusted verification persisted output: 120 KB maximum.
 - Session-derived trajectory: 500 events maximum.
-- Actions artifact retention: 14 days.
+- Diagnostic Actions artifact retention: 14 days.
+- Candidate Actions artifact retention: 14 days in the current AGT-057 implementation. This is an implementation retention window, not a promise of permanent recovery storage.
 
 Truncation is explicit in companion metadata rather than silently dropping content.
 
@@ -68,6 +72,16 @@ Truncation is explicit in companion metadata rather than silently dropping conte
 - commit and Draft PR pointers only when those states were actually reached.
 
 A run that fails before commit or PR creation must still be diagnosable from the package without prior ChatGPT-thread memory.
+
+When Worker execution reached a mutable workspace, trusted Candidate capture runs before bounded-change verification and trusted repository verification. `worker-run.json` distinguishes at least:
+
+- `captured` with successful Artifact upload → `recoverable=true`;
+- `unavailable` (for example, no effective workspace change);
+- `rejected` when the Candidate contract/safety boundary refuses persistence;
+- `capture_failed`;
+- `upload_failed` when local capture succeeded but durable Artifact upload did not.
+
+A local patch is **not** considered recoverable until its Candidate Artifact upload succeeds. Candidate capture or upload failure therefore remains an explicit recovery failure, even when other diagnostic evidence exists.
 
 ## Source of truth
 

@@ -696,6 +696,172 @@ jobs:
 
           exit "$worker_rc"
 
+      - name: Capture durable Candidate
+        id: candidate
+        if: ${{ always() && steps.checkout.outcome == 'success' && steps.identity.outcome == 'success' && steps.worker.outcome != 'skipped' }}
+        shell: bash
+        env:
+          PATH: /usr/bin:/bin
+          BASH_ENV: ''
+          ENV: ''
+          PYTHONPATH: ''
+          PYTHONHOME: ''
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          PROVIDER: ${{ steps.provider.outputs.provider }}
+          MODEL: ${{ steps.provider.outputs.model }}
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
+        run: |
+          set -euo pipefail
+
+          root="${RUNNER_TEMP}/mira-worker"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            -o "${root}/trusted-candidate.py"
+          test -s "${root}/trusted-candidate.py"
+          echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${root}/identity.txt"
+
+          candidate_dir="${root}/candidate"
+          status_file="${root}/candidate-status.json"
+          artifact_name="mira-external-worker-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$root"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+          if git diff --quiet "$BASE_SHA" -- && test -z "$(git ls-files --others --exclude-standard)"; then
+            export CANDIDATE_STATUS_FILE="$status_file"
+            python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(os.environ["CANDIDATE_STATUS_FILE"]).write_text(json.dumps({
+              "schema_version": 1,
+              "state": "unavailable",
+              "recoverable": False,
+              "reason": "no_changes",
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+            echo "state=unavailable" >> "$GITHUB_OUTPUT"
+            echo "recoverable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          export CONTRACT_FINGERPRINT
+          CONTRACT_FINGERPRINT="$(python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
+          issue = json.loads((root / "issue.json").read_text())
+          comments = json.loads((root / "maintainer-comments.json").read_text())
+          payload = {
+              "fingerprint_version": "agt-057-transitional-v1",
+              "issue": {
+                  "number": issue.get("number"),
+                  "title": issue.get("title") or "",
+                  "body": issue.get("body") or "",
+              },
+              "trusted_maintainer_comments": comments,
+          }
+          encoded = json.dumps(
+              payload,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ).encode("utf-8")
+          print("sha256:" + hashlib.sha256(encoded).hexdigest())
+          PY
+          )"
+
+          rm -rf "$candidate_dir"
+          set +e
+          python3 "$root/trusted-candidate.py" capture \
+            --repo "$GITHUB_WORKSPACE" \
+            --output "$candidate_dir" \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number "$ISSUE_NUMBER" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --base-branch "$BASE_BRANCH" \
+            --base-sha "$BASE_SHA" \
+            --contract-fingerprint "$CONTRACT_FINGERPRINT" \
+            --worker-outcome "${WORKER_OUTCOME:-unknown}" \
+            --provider "${PROVIDER:-}" \
+            --model "${MODEL:-}" \
+            > "$root/candidate-capture.stdout" \
+            2> "$root/candidate-capture.stderr"
+          candidate_rc="$?"
+          set -e
+
+          export CANDIDATE_RC="$candidate_rc"
+          export CANDIDATE_STATUS_FILE="$status_file"
+          export CANDIDATE_DIR="$candidate_dir"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          status_path = Path(os.environ["CANDIDATE_STATUS_FILE"])
+          candidate_dir = Path(os.environ["CANDIDATE_DIR"])
+          rc = int(os.environ["CANDIDATE_RC"])
+          if rc == 0:
+              manifest = json.loads((candidate_dir / "candidate.json").read_text())
+              payload = {
+                  "schema_version": 1,
+                  "state": "captured",
+                  "recoverable": False,
+                  "reason": "awaiting_artifact_upload",
+                  "manifest": {
+                      "schema_version": manifest.get("schema_version"),
+                      "base_sha": manifest.get("base_sha"),
+                      "contract_fingerprint": manifest.get("contract_fingerprint"),
+                      "candidate_patch_sha256": manifest.get("candidate_patch_sha256"),
+                      "candidate_patch_bytes": manifest.get("candidate_patch_bytes"),
+                      "candidate_tree_oid": manifest.get("candidate_tree_oid"),
+                      "worker_outcome": manifest.get("worker_outcome"),
+                      "provider": manifest.get("provider"),
+                      "model": manifest.get("model"),
+                  },
+              }
+          else:
+              stderr_path = Path(os.environ["RUNNER_TEMP"]) / "mira-worker" / "candidate-capture.stderr"
+              error = stderr_path.read_text(errors="replace")[:4000] if stderr_path.exists() else ""
+              payload = {
+                  "schema_version": 1,
+                  "state": "rejected" if rc == 2 else "capture_failed",
+                  "recoverable": False,
+                  "reason": "candidate_contract_rejected" if rc == 2 else "candidate_capture_failed",
+                  "capture_exit_code": rc,
+                  "error": error,
+              }
+          status_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          PY
+
+          if test "$candidate_rc" -eq 0; then
+            echo "state=captured" >> "$GITHUB_OUTPUT"
+            echo "recoverable=false" >> "$GITHUB_OUTPUT"
+          else
+            if test "$candidate_rc" -eq 2; then
+              echo "state=rejected" >> "$GITHUB_OUTPUT"
+            else
+              echo "state=capture_failed" >> "$GITHUB_OUTPUT"
+            fi
+            echo "recoverable=false" >> "$GITHUB_OUTPUT"
+            exit "$candidate_rc"
+          fi
+
+      - name: Upload durable Candidate
+        id: candidate_upload
+        if: ${{ always() && steps.candidate.outputs.state == 'captured' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.candidate.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/mira-worker/candidate/candidate.patch
+            ${{ runner.temp }}/mira-worker/candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Require a bounded implementation change
         id: bounded
         shell: bash
@@ -872,6 +1038,12 @@ jobs:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           VERSION_OUTCOME: ${{ steps.version.outcome }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          CANDIDATE_UPLOAD_OUTCOME: ${{ steps.candidate_upload.outcome }}
+          CANDIDATE_ARTIFACT_NAME: ${{ steps.candidate.outputs.artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ steps.candidate_upload.outputs.artifact-id }}
+          CANDIDATE_ARTIFACT_URL: ${{ steps.candidate_upload.outputs.artifact-url }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ steps.candidate_upload.outputs.artifact-digest }}
           BOUNDED_OUTCOME: ${{ steps.bounded.outcome }}
           VERIFY_OUTCOME: ${{ steps.verify.outcome }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
@@ -906,6 +1078,8 @@ jobs:
               ("install", os.getenv("INSTALL_OUTCOME")),
               ("version", os.getenv("VERSION_OUTCOME")),
               ("worker", os.getenv("WORKER_OUTCOME")),
+              ("candidate_capture", os.getenv("CANDIDATE_OUTCOME")),
+              ("candidate_upload", os.getenv("CANDIDATE_UPLOAD_OUTCOME")),
               ("bounded_change", os.getenv("BOUNDED_OUTCOME")),
               ("trusted_verification", os.getenv("VERIFY_OUTCOME")),
               ("commit_push", os.getenv("COMMIT_OUTCOME")),
@@ -945,6 +1119,8 @@ jobs:
               "install": os.getenv("INSTALL_OUTCOME"),
               "version": os.getenv("VERSION_OUTCOME"),
               "worker": os.getenv("WORKER_OUTCOME"),
+              "candidate_capture": os.getenv("CANDIDATE_OUTCOME"),
+              "candidate_upload": os.getenv("CANDIDATE_UPLOAD_OUTCOME"),
               "bounded_change": os.getenv("BOUNDED_OUTCOME"),
               "trusted_verification": os.getenv("VERIFY_OUTCOME"),
               "commit_push": os.getenv("COMMIT_OUTCOME"),
@@ -959,6 +1135,40 @@ jobs:
                   session = json.loads(sp.read_text())
               except Exception:
                   session = {"available": False, "reason": "invalid_session_summary"}
+
+          candidate = {
+              "state": "unavailable",
+              "recoverable": False,
+              "reason": "capture_not_attempted",
+          }
+          cp = root / "candidate-status.json"
+          if cp.exists():
+              try:
+                  loaded = json.loads(cp.read_text())
+                  if isinstance(loaded, dict):
+                      candidate = loaded
+              except Exception:
+                  candidate = {
+                      "state": "capture_failed",
+                      "recoverable": False,
+                      "reason": "invalid_candidate_status",
+                  }
+
+          candidate["capture_outcome"] = os.getenv("CANDIDATE_OUTCOME")
+          candidate["upload_outcome"] = os.getenv("CANDIDATE_UPLOAD_OUTCOME")
+          candidate["artifact_name"] = os.getenv("CANDIDATE_ARTIFACT_NAME") or None
+          candidate["artifact_id"] = os.getenv("CANDIDATE_ARTIFACT_ID") or None
+          candidate["artifact_url"] = os.getenv("CANDIDATE_ARTIFACT_URL") or None
+          candidate["artifact_digest"] = os.getenv("CANDIDATE_ARTIFACT_DIGEST") or None
+          candidate["artifact_retention_days"] = 14
+          if candidate.get("state") == "captured":
+              if os.getenv("CANDIDATE_UPLOAD_OUTCOME") == "success":
+                  candidate["recoverable"] = True
+                  candidate["reason"] = None
+              else:
+                  candidate["state"] = "upload_failed"
+                  candidate["recoverable"] = False
+                  candidate["reason"] = "artifact_upload_failed"
 
           payload = {
               "schema_version": 1,
@@ -987,6 +1197,7 @@ jobs:
               "failure_stage": os.getenv("FAILURE_STAGE"),
               "stages": stages,
               "session": session,
+              "candidate": candidate,
               "commit_sha": os.getenv("COMMIT_SHA") if os.getenv("COMMIT_OUTCOME") == "success" else None,
               "draft_pr_url": os.getenv("PR_URL") or None,
               "verification": {
@@ -1002,6 +1213,7 @@ jobs:
                   "session_content_policy": "metadata-only trajectory; sanitized export removed after extraction",
                   "worker_output_limit_bytes": 120000,
                   "verification_output_limit_bytes": 120000,
+                  "candidate_tool_commit": identity.get("candidate_tool_commit"),
               },
           }
           (root / "worker-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -1020,6 +1232,9 @@ jobs:
             ${{ runner.temp }}/mira-worker/worker-output-meta.json
             ${{ runner.temp }}/mira-worker/verification.log
             ${{ runner.temp }}/mira-worker/verification-meta.json
+            ${{ runner.temp }}/mira-worker/candidate-status.json
+            ${{ runner.temp }}/mira-worker/candidate-capture.stdout
+            ${{ runner.temp }}/mira-worker/candidate-capture.stderr
             ${{ runner.temp }}/mira-worker/changed-files.txt
             ${{ runner.temp }}/mira-worker/committed-files.txt
             ${{ runner.temp }}/mira-worker/diff-stat.txt

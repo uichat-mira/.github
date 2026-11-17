@@ -1,6 +1,6 @@
 # External Worker Candidate Contract
 
-Status: active implementation contract for AGT-056. Production Worker integration is not part of this change.
+Status: active implementation contract. AGT-056 established the primitive; AGT-057 integrates it into the reusable External Worker.
 
 A Candidate is the durable, recoverable code state produced by one External Worker attempt before trusted verification and GitHub delivery. It is **not** a pull request, acceptance decision, verification result, or second task ledger.
 
@@ -124,3 +124,24 @@ These checks reduce risk; they are **not** a complete secret scanner and must ne
 - Branch/commit/PR owns Git delivery evidence.
 
 A Candidate may exist when the Worker failed, was blocked, or has not been independently verified. Saving it preserves work; it does not grant authority.
+
+## Production Worker integration
+
+The reusable External Worker now treats Candidate capture as a trusted post-Worker stage that runs **before** bounded-change validation, trusted repository verification, commit/push, and Draft PR creation.
+
+After model execution has ended, the trusted Capture step downloads the Candidate implementation from the public immutable AGT-056 commit `c5d93e149765f9068f3d342d2aed3a40a8f20efc` into `RUNNER_TEMP` without a GitHub credential. Its PATH is reset to the system Git/Python/cURL locations for the capture step. The model does not have the trusted Candidate file present while it is running, and Candidate capture does not receive GitHub write credentials.
+
+Current AGT-057 behavior:
+
+- Worker success with effective workspace changes → capture Candidate, upload immutable Candidate Artifact, then continue the existing verification/delivery chain;
+- Worker/provider non-zero failure after producing changes → the later trusted capture step still runs via `always()` and attempts to persist the Candidate;
+- trusted verification failure happens **after** Candidate upload, so the Candidate remains available for diagnosis/recovery;
+- no effective workspace changes → no Candidate is manufactured; status is `unavailable/no_changes`;
+- Candidate contract/safety rejection → status is `rejected` and the run remains non-recoverable;
+- Candidate Artifact upload failure → status is `upload_failed`, `recoverable=false`; diagnostic evidence must not claim otherwise.
+
+The current Candidate Artifact retention is 14 days, matching the diagnostic evidence window. Longer-lived recovery storage is deliberately not claimed by AGT-057.
+
+AGT-057 uses a transitional deterministic SHA-256 fingerprint over the validated Issue title/body plus the trusted-maintainer comment snapshot only to bind the run-local Candidate manifest. Canonical contract-amendment fingerprint semantics for cross-run Recovery belong to AGT-059; consumers must not treat the AGT-057 transitional fingerprint as an authorization or compatibility decision.
+
+This integration does not solve hard runner loss, force cancellation, guaranteed cleanup after platform termination, or hostile same-Runner process isolation. The Capture code and credential scope are workflow-owned, but AGT-057 still reads the mutable workspace on the Worker Runner; it must not be described as a sandbox boundary against a malicious process with arbitrary shell access. AGT-058 moves verification and delivery to clean Runner boundaries. AGT-057 improves recoverability for normal completion and controllable failure paths where the trusted capture/upload stages still execute.
