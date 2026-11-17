@@ -16,10 +16,10 @@ on:
         required: true
         type: string
       timeout_minutes:
-        description: Maximum execution time (minutes) for the Worker job
+        description: Advisory Worker planning budget (minutes); never used as a hard termination timeout
         required: false
         type: number
-        default: 30
+        default: 60
       free_mode:
         description: Run keyless official OpenCode CLI v2 on allowlisted free models
         required: false
@@ -73,7 +73,6 @@ jobs:
       issues: read
       pull-requests: none
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       worker_branch: ${{ steps.handoff.outputs.worker_branch }}
       pull_request_url: ${{ steps.handoff.outputs.pull_request_url }}
@@ -814,6 +813,7 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}
         run: |
           set -euo pipefail
 
@@ -927,6 +927,8 @@ jobs:
           - issue: #${ISSUE_NUMBER}
           - delivery base: ${BASE_BRANCH}
           - base SHA: ${BASE_SHA}
+
+          Advisory work budget: ${SOFT_BUDGET_MINUTES} minutes. This is a planning checkpoint, NOT a hard deadline. Do not stop, abandon, or discard useful work merely because this budget has elapsed. Continue when the task needs more time. If a handoff is necessary, leave a coherent implementation checkpoint and an exact account of remaining work. The GitHub-hosted runner's platform execution ceiling is external and cannot be extended by this workflow.
 
           Important execution constraints:
           - Work only on this Issue.
@@ -2081,7 +2083,7 @@ jobs:
           root="${RUNNER_TEMP}/mira-delivery"
           mkdir -p "$root"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/ff4022ca1e16e3437184138442cb57dfc71cdbb9/.github/scripts/worker-candidate/delivery.py" \
+            "https://raw.githubusercontent.com/uichat-mira/.github/043f21fbe3f57d63cc388390a35d813d912c7c1c/.github/scripts/worker-candidate/delivery.py" \
             -o "$root/trusted-delivery.py"
           test -s "$root/trusted-delivery.py"
 
@@ -2189,6 +2191,7 @@ jobs:
 
           python3 "$root/trusted-delivery.py" ensure-pr \
             --branch "$WORKER_BRANCH" \
+            --head-owner "$GITHUB_REPOSITORY_OWNER" \
             --base "$BASE_BRANCH" \
             --head-sha "${{ steps.commit.outputs.commit_sha }}" \
             --title "agent: #${ISSUE_NUMBER} ${ISSUE_TITLE}" \
