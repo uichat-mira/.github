@@ -129,7 +129,7 @@ A Candidate may exist when the Worker failed, was blocked, or has not been indep
 
 The reusable External Worker now treats Candidate capture as a trusted post-Worker stage that runs **before** bounded-change validation, trusted repository verification, commit/push, and Draft PR creation.
 
-The capture implementation used by the Worker is loaded from the immutable AGT-056 commit `c5d93e149765f9068f3d342d2aed3a40a8f20efc` into `RUNNER_TEMP` before model execution. The Worker workspace therefore cannot redefine the trusted Candidate primitive merely by editing repository files.
+After model execution has ended, the trusted Capture step loads the Candidate implementation from the immutable AGT-056 commit `c5d93e149765f9068f3d342d2aed3a40a8f20efc` into `RUNNER_TEMP` using a step-scoped GitHub token. The model step neither receives that token nor has the trusted Candidate file present while it is running, so repository edits cannot redefine the capture primitive.
 
 Current AGT-057 behavior:
 
