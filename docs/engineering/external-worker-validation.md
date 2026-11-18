@@ -113,6 +113,8 @@ Reusable Worker inputs:
 - `validation_max_tier` — hard ceiling for profile mode; default `L3`;
 - `verification_command` — legacy compatibility path only when `validation_profile` is empty.
 
+Before provider/model setup, the Worker resolves a `validation-contract.json` from the exact base. A missing/invalid requested profile, invalid max tier, or empty legacy contract is rejected **before model execution** with an explicit `VALIDATION_GAP` or `BLOCKED` dispatch result. This is a dispatch-contract failure, not a Candidate failure.
+
 A profile-mode dispatch may run only checks declared by the selected repository profile and at/below the requested ceiling.
 
 The ceiling is monotonic:
