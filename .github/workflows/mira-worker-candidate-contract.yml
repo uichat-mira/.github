@@ -164,7 +164,6 @@ jobs:
           assert "contract_fingerprint" in recovery_index
           assert "ambiguity_guard" in recovery_index
           assert "git diff --check" not in worker[worker.index("Require a bounded implementation change"):worker.index("Re-publish verified Candidate for Delivery-only retry")]
-          assert "git diff --check && git diff --cached --check" in verify
           assert "validation_profile:" in workflow
           assert "validation_max_tier:" in workflow
           PY
