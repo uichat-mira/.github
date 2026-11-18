@@ -65,6 +65,8 @@ class ValidationTests(unittest.TestCase):
 
             _, report = run_validation(root, profile, max_tier="L1")
             self.assertEqual(report["result"], "REPAIR")
+            self.assertEqual(report["profile_state"], "available")
+            self.assertIsNotNone(report["profile_sha256"])
             diff = next(x for x in report["checks"] if x["id"] == "candidate_diff")
             self.assertEqual(diff["status"], "failed")
             self.assertNotEqual(diff["exit_code"], 0)
