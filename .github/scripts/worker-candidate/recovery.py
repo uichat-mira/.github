@@ -139,20 +139,40 @@ def fingerprint(args: argparse.Namespace) -> int:
     ambiguous.sort(key=lambda x: (x.get("created_at") or "", x.get("id") or 0))
 
     verification_command = normalize_text(getattr(args, "verification_command", ""))
-    canonical = {
-        "fingerprint_version": "mira-contract-v2",
-        "issue": {
-            "number": issue.get("number"),
-            "title": normalize_text(issue.get("title")).strip(),
-            "body": normalize_text(issue.get("body")),
-        },
-        "execution_contract": {
+    validation_profile = normalize_text(getattr(args, "validation_profile", "")).strip()
+    validation_max_tier = normalize_text(getattr(args, "validation_max_tier", "")).strip()
+    validation_contract_sha256 = normalize_text(
+        getattr(args, "validation_contract_sha256", "")
+    ).strip()
+
+    if validation_profile:
+        fingerprint_version = "mira-contract-v3-validation"
+        execution_contract = {
+            "base_branch": normalize_text(getattr(args, "base_branch", "")).strip(),
+            "validation_profile": validation_profile,
+            "validation_max_tier": validation_max_tier,
+            "validation_contract_sha256": validation_contract_sha256,
+        }
+    else:
+        # Preserve the exact v2 legacy fingerprint shape so existing
+        # verification_command Candidates remain recoverable during migration.
+        fingerprint_version = "mira-contract-v2"
+        execution_contract = {
             "base_branch": normalize_text(getattr(args, "base_branch", "")).strip(),
             "verification_command_sha256": (
                 "sha256:" + hashlib.sha256(verification_command.encode("utf-8")).hexdigest()
                 if verification_command else ""
             ),
+        }
+
+    canonical = {
+        "fingerprint_version": fingerprint_version,
+        "issue": {
+            "number": issue.get("number"),
+            "title": normalize_text(issue.get("title")).strip(),
+            "body": normalize_text(issue.get("body")),
         },
+        "execution_contract": execution_contract,
         "trusted_amendments": amendments,
     }
     ambiguity_payload = {
@@ -482,7 +502,10 @@ def parser() -> argparse.ArgumentParser:
     fp.add_argument("--issue-json", required=True)
     fp.add_argument("--comments-json", required=True)
     fp.add_argument("--base-branch", required=True)
-    fp.add_argument("--verification-command", required=True)
+    fp.add_argument("--verification-command", default="")
+    fp.add_argument("--validation-profile", default="")
+    fp.add_argument("--validation-max-tier", default="")
+    fp.add_argument("--validation-contract-sha256", default="")
     fp.add_argument("--output")
     fp.set_defaults(func=fingerprint)
 
