@@ -253,7 +253,7 @@ jobs:
             "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
@@ -927,7 +927,7 @@ jobs:
 
           root="${RUNNER_TEMP}/mira-worker"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
           test -s "${root}/trusted-candidate.py"
           echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${root}/identity.txt"
@@ -968,6 +968,7 @@ jobs:
             --issue-number "$ISSUE_NUMBER" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repair-round 0 \
             --base-branch "$BASE_BRANCH" \
             --base-sha "$BASE_SHA" \
             --contract-fingerprint "$CONTRACT_FINGERPRINT" \
@@ -1587,7 +1588,7 @@ jobs:
           root="${RUNNER_TEMP}/mira-verify"
           mkdir -p "$root"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "$root/trusted-candidate.py"
           test -s "$root/trusted-candidate.py"
 
@@ -1762,6 +1763,7 @@ jobs:
               "repository": os.getenv("GITHUB_REPOSITORY"),
               "run_id": os.getenv("GITHUB_RUN_ID"),
               "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
+              "repair_round": 0,
               "base_sha": os.getenv("BASE_SHA"),
               "candidate_patch_sha256": os.getenv("EXPECTED_PATCH_SHA256"),
               "candidate_tree_oid": os.getenv("EXPECTED_TREE_OID"),
@@ -1805,22 +1807,132 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Require verified Candidate
+      - name: Require trustworthy Validation evidence
         if: always()
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          VALIDATION_STEP_OUTCOME: ${{ steps.validation.outcome }}
           VALIDATION_RESULT: ${{ steps.verify_meta.outputs.validation_result }}
         run: |
           set -euo pipefail
           test "$RESTORE_OUTCOME" = "success"
-          test "$VALIDATION_RESULT" = "PASS"
+          test "$VALIDATION_STEP_OUTCOME" = "success"
+          case "$VALIDATION_RESULT" in
+            PASS|REPAIR|BLOCKED|VALIDATION_GAP) ;;
+            *) exit 1 ;;
+          esac
+
+  initial_repair_outcome:
+    needs:
+      - worker_capture
+      - verify
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.decision.outputs.state }}
+      next_repair_round: ${{ steps.decision.outputs.next_repair_round }}
+    steps:
+      - name: Load trusted bounded repair state helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-repair/repair.py" \
+            -o "${RUNNER_TEMP}/trusted-repair.py"
+          test -s "${RUNNER_TEMP}/trusted-repair.py"
+
+      - name: Classify initial Validation outcome
+        id: decision
+        shell: bash
+        env:
+          VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
+        run: |
+          set -euo pipefail
+          python3 "${RUNNER_TEMP}/trusted-repair.py" decide \
+            --validation-result "$VALIDATION_RESULT" \
+            --completed-rounds 0 \
+            --output "${RUNNER_TEMP}/repair-outcome.json"
+          echo "state=$(jq -r '.state' "${RUNNER_TEMP}/repair-outcome.json")" >> "$GITHUB_OUTPUT"
+          echo "next_repair_round=$(jq -r '.next_repair_round // ""' "${RUNNER_TEMP}/repair-outcome.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload initial repair decision
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-repair-outcome-${{ github.run_id }}-${{ github.run_attempt }}-initial
+          path: ${{ runner.temp }}/repair-outcome.json
+          if-no-files-found: error
+          retention-days: 14
+
+  repair_round_1:
+    needs:
+      - worker_capture
+      - verify
+      - initial_repair_outcome
+    if: ${{ always() && needs.initial_repair_outcome.outputs.state == 'RETURNED' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: none
+      pull-requests: none
+    uses: ./.github/workflows/mira-external-worker-repair.yml
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      base_branch: ${{ inputs.base_branch }}
+      base_sha: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+      contract_fingerprint: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+      source_candidate_artifact_name: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+      source_validation_artifact_name: ${{ needs.verify.outputs.verification_artifact_name }}
+      initial_worker_handoff_artifact_name: mira-external-worker-${{ github.run_id }}
+      verification_command: ${{ inputs.verification_command }}
+      validation_profile: ${{ inputs.validation_profile }}
+      validation_max_tier: ${{ inputs.validation_max_tier }}
+      timeout_minutes: ${{ inputs.timeout_minutes }}
+      free_mode: ${{ inputs.free_mode }}
+      repair_round: 1
+    secrets:
+      opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
+      provider_api_key: ${{ secrets.provider_api_key }}
+
+  repair_round_2:
+    needs:
+      - worker_capture
+      - repair_round_1
+    if: ${{ always() && needs.repair_round_1.outputs.state == 'RETURNED' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: none
+      pull-requests: none
+    uses: ./.github/workflows/mira-external-worker-repair.yml
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      base_branch: ${{ inputs.base_branch }}
+      base_sha: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+      contract_fingerprint: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+      source_candidate_artifact_name: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
+      source_validation_artifact_name: ${{ needs.repair_round_1.outputs.verification_artifact_name }}
+      initial_worker_handoff_artifact_name: mira-external-worker-${{ github.run_id }}
+      verification_command: ${{ inputs.verification_command }}
+      validation_profile: ${{ inputs.validation_profile }}
+      validation_max_tier: ${{ inputs.validation_max_tier }}
+      timeout_minutes: ${{ inputs.timeout_minutes }}
+      free_mode: ${{ inputs.free_mode }}
+      repair_round: 2
+    secrets:
+      opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
+      provider_api_key: ${{ secrets.provider_api_key }}
 
   delivery:
     needs:
       - worker_capture
       - verify
-    if: ${{ always() && needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && ((needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only') || needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only') }}
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && (needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only' || needs.initial_repair_outcome.outputs.state == 'VERIFIED' || needs.repair_round_1.outputs.state == 'VERIFIED' || needs.repair_round_2.outputs.state == 'VERIFIED') }}
     permissions:
       contents: write
       issues: none
@@ -1837,36 +1949,77 @@ jobs:
         shell: bash
         env:
           RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
-          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
-          NORMAL_PATCH: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          NORMAL_TREE: ${{ needs.verify.outputs.candidate_tree_oid }}
-          NORMAL_CONTRACT: ${{ needs.verify.outputs.contract_fingerprint }}
-          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          INITIAL_STATE: ${{ needs.initial_repair_outcome.outputs.state }}
+          R1_STATE: ${{ needs.repair_round_1.outputs.state }}
+          R2_STATE: ${{ needs.repair_round_2.outputs.state }}
+          INITIAL_CANDIDATE: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          INITIAL_VERIFY: ${{ needs.verify.outputs.verification_artifact_name }}
+          INITIAL_PATCH: ${{ needs.verify.outputs.candidate_patch_sha256 }}
+          INITIAL_TREE: ${{ needs.verify.outputs.candidate_tree_oid }}
+          R1_CANDIDATE: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
+          R1_WORKER_HANDOFF: ${{ needs.repair_round_1.outputs.worker_handoff_artifact_name }}
+          R1_VERIFY: ${{ needs.repair_round_1.outputs.verification_artifact_name }}
+          R1_PATCH: ${{ needs.repair_round_1.outputs.candidate_patch_sha256 }}
+          R1_TREE: ${{ needs.repair_round_1.outputs.candidate_tree_oid }}
+          R2_CANDIDATE: ${{ needs.repair_round_2.outputs.candidate_artifact_name }}
+          R2_WORKER_HANDOFF: ${{ needs.repair_round_2.outputs.worker_handoff_artifact_name }}
+          R2_VERIFY: ${{ needs.repair_round_2.outputs.verification_artifact_name }}
+          R2_PATCH: ${{ needs.repair_round_2.outputs.candidate_patch_sha256 }}
+          R2_TREE: ${{ needs.repair_round_2.outputs.candidate_tree_oid }}
+          RECOVERED_VERIFY: ${{ needs.worker_capture.outputs.verification_artifact_name }}
           RECOVERED_PATCH: ${{ needs.worker_capture.outputs.verified_patch_sha256 }}
           RECOVERED_TREE: ${{ needs.worker_capture.outputs.verified_tree_oid }}
-          RECOVERED_CONTRACT: ${{ needs.worker_capture.outputs.verified_contract_fingerprint }}
+          CONTRACT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
         run: |
           set -euo pipefail
+          worker_handoff="mira-external-worker-${GITHUB_RUN_ID}"
+          repair_round=0
+
           if test "$RECOVERY_MODE" = "delivery_retry_only"; then
-            artifact="$RECOVERED_VERIFY_ARTIFACT"
+            candidate="$INITIAL_CANDIDATE"
+            verify="$RECOVERED_VERIFY"
             patch="$RECOVERED_PATCH"
             tree="$RECOVERED_TREE"
-            contract="$RECOVERED_CONTRACT"
+            repair_round=-1
+          elif test "$R2_STATE" = "VERIFIED"; then
+            candidate="$R2_CANDIDATE"
+            worker_handoff="$R2_WORKER_HANDOFF"
+            verify="$R2_VERIFY"
+            patch="$R2_PATCH"
+            tree="$R2_TREE"
+            repair_round=2
+          elif test "$R1_STATE" = "VERIFIED"; then
+            candidate="$R1_CANDIDATE"
+            worker_handoff="$R1_WORKER_HANDOFF"
+            verify="$R1_VERIFY"
+            patch="$R1_PATCH"
+            tree="$R1_TREE"
+            repair_round=1
+          elif test "$INITIAL_STATE" = "VERIFIED"; then
+            candidate="$INITIAL_CANDIDATE"
+            verify="$INITIAL_VERIFY"
+            patch="$INITIAL_PATCH"
+            tree="$INITIAL_TREE"
+            repair_round=0
           else
-            artifact="$NORMAL_VERIFY_ARTIFACT"
-            patch="$NORMAL_PATCH"
-            tree="$NORMAL_TREE"
-            contract="$NORMAL_CONTRACT"
+            echo "::error::Delivery has no trusted VERIFIED Candidate generation." >&2
+            exit 1
           fi
-          test -n "$artifact"
+
+          test -n "$candidate"
+          test -n "$worker_handoff"
+          test -n "$verify"
           test -n "$patch"
           test -n "$tree"
-          test -n "$contract"
+          test -n "$CONTRACT"
           {
-            echo "verification_artifact_name=$artifact"
+            echo "candidate_artifact_name=$candidate"
+            echo "worker_handoff_artifact_name=$worker_handoff"
+            echo "verification_artifact_name=$verify"
             echo "candidate_patch_sha256=$patch"
             echo "candidate_tree_oid=$tree"
-            echo "contract_fingerprint=$contract"
+            echo "contract_fingerprint=$CONTRACT"
+            echo "repair_round=$repair_round"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact verified Candidate base
@@ -1881,14 +2034,14 @@ jobs:
         id: candidate_download
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          name: ${{ steps.verified_handoff.outputs.candidate_artifact_name }}
           path: ${{ runner.temp }}/mira-delivery/candidate
 
       - name: Download Worker/Capture handoff
         id: worker_handoff
         uses: actions/download-artifact@v4
         with:
-          name: mira-external-worker-${{ github.run_id }}
+          name: ${{ steps.verified_handoff.outputs.worker_handoff_artifact_name }}
           path: ${{ runner.temp }}/mira-delivery/worker
 
       - name: Download Verify evidence
@@ -1905,7 +2058,7 @@ jobs:
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-delivery"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "$root/trusted-candidate.py"
           test -s "$root/trusted-candidate.py"
 
@@ -1917,6 +2070,7 @@ jobs:
           EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
           EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          EXPECTED_REPAIR_ROUND: ${{ steps.verified_handoff.outputs.repair_round }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
         run: |
           set -euo pipefail
@@ -1928,6 +2082,7 @@ jobs:
             --candidate-dir "$root/candidate" \
             --expected-repository "$EXPECTED_REPOSITORY" \
             --expected-issue-number "$EXPECTED_ISSUE_NUMBER" \
+            --expected-repair-round "$EXPECTED_REPAIR_ROUND" \
             --expected-base-sha "$EXPECTED_BASE_SHA" \
             --expected-contract-fingerprint "$EXPECTED_CONTRACT_FINGERPRINT" \
             | tee "$root/restore-result.json"
@@ -1936,8 +2091,8 @@ jobs:
         id: identity
         shell: bash
         env:
-          WORKER_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
-          WORKER_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          WORKER_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          WORKER_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           VERIFY_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
           VERIFY_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           VERIFY_CONTRACT_FINGERPRINT: ${{ steps.verified_handoff.outputs.contract_fingerprint }}
