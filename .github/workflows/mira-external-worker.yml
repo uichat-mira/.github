@@ -2296,6 +2296,8 @@ jobs:
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
           CANDIDATE_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
           CANDIDATE_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
@@ -2313,6 +2315,19 @@ jobs:
           verify_path = root / "verify" / "verification.log"
           worker_output = worker_path.read_text(errors="replace")[:12000] if worker_path.exists() else "(Delivery-only retry: model was not rerun.)"
           verification_output = verify_path.read_text(errors="replace")[:12000] if verify_path.exists() else "(Prior trusted Verify evidence reused.)"
+          validation_path = root / "verify" / "validation-report.json"
+          validation = {}
+          if validation_path.exists():
+              try:
+                  import json
+                  validation = json.loads(validation_path.read_text())
+              except Exception:
+                  validation = {}
+
+          if os.environ.get("VALIDATION_PROFILE"):
+              validation_identity = f"profile `{os.environ['VALIDATION_PROFILE']}` · max `{os.environ['VALIDATION_MAX_TIER']}`"
+          else:
+              validation_identity = f"legacy command `{os.environ['VERIFICATION_COMMAND']}`"
 
           body = f"""## Mira external Worker handoff
 
@@ -2327,8 +2342,8 @@ jobs:
           - Model route: `{os.environ["MODEL_ROUTE"]}`
           - Candidate patch: `{os.environ["CANDIDATE_PATCH_SHA256"]}`
           - Candidate tree: `{os.environ["CANDIDATE_TREE_OID"]}`
-          - Verification: PASS (clean Runner)
-          - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
+          - Validation: `{validation.get("result", "PASS")}` (clean Runner)
+          - Validation contract: {validation_identity}
 
           This PR is intentionally **Draft**. Worker execution and Delivery do not grant merge, Issue acceptance/closure, environment promotion, release, or deployment authority.
 
