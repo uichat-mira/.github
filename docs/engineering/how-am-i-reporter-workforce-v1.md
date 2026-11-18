@@ -24,7 +24,7 @@ Target: Mira External Worker / paid Worker callers / Worker Workforce / Control 
 
 ### 0.2 已核实的当前工程现实
 
-- uichat-mira/.github main 当前共享工作流保留 worker_capture、verify、delivery、recovery_index 四个既有 Job，并从 PR #82 起增加**独立的 trusted_reporter Job**；具备隔离凭据和真实失败报道，尚未完成成功交付全链路 E2E；不等于 Live/heartbeat。
+- uichat-mira/.github main 共享工作流在 Worker/Capture、clean Verify、Delivery、Recovery Index 与独立 trusted_reporter 基础上，加入 AGT-068 的两轮有界 repair calls 与单一 lifecycle_handoff；Reporter 继续隔离凭据、只读可信阶段事实，不等于 Live/heartbeat。
 - AGT-056～059 已提供可恢复 Candidate、干净 Runner 验证、独立交付、跨 Run 恢复。恢复索引是 Issue 中 `mira-recovery-candidate:v1` 机器注释，原始证据仍须从 Actions Artifact/manifest/verify evidence 校验。
 - AGT-059 的 caller 新权限要求 `actions: read`（历史 Artifact）与 `issues: write`（隔离 Recovery Index）。产品 caller 对历史 SHA 的 pin 尚需逐仓核查/升级，不能把 Org main 更新等于生产已经启用。
 - Cloud Auth 默认分支为 dev；Desktop/Mobile 默认为 prod。`issue_comment` 实际入口读取默认分支工作流，dev 分支的修改不自动令评论派工生效。
@@ -163,6 +163,15 @@ Reporter 的 “pipeline verified” 必须源自 trusted Verify 而非 OpenCode
 
 任何 Tool 事件、heartbeat、provider retry 属于 Live Reporter **受控扩展**，不自动开启。禁收完整 stdout/stderr、trajectory、Prompt、推理或工具参数、变更代码、环境变量、HTTP auth/cookie 和包含用户数据的任意 metadata。仅允许固定 error_code + stage + 短脱敏摘要。
 
+AGT-068 的返工状态不升级 `haomai.telemetry.v1` schema，也不要求先部署新的号脉 collector。Stage Reporter 使用现有白名单做兼容投影：
+
+- `recovery.detected` + `stage=repair` + `outcome=returned`，以固定 `VALIDATION_REPAIR_ROUND_1/2` error code 区分返工轮次；
+- `recovery.failed` + `stage=repair` + `outcome=blocked|escalated`；
+- `candidate.captured` 的 Artifact reference 指向 lifecycle_handoff 选中的当前 Candidate 世代；
+- `verify.passed` 只允许来自选中 Candidate 的 lifecycle `VERIFIED` + trusted PASS evidence；初始 Verify Job 即使成功产出结构化 `REPAIR`，也不得被 Reporter 误报为 PASS。
+
+GitHub lifecycle/Candidate/Validation evidence 仍是事实源；这些事件只是短期观测投影。
+
 ### 3.3 HMAC：V1 只有 Reporter 机器身份，不预建多 App 产品体系
 
 头字段：
@@ -204,7 +213,7 @@ Worker Workforce 是调度与可观察控制面，底层执行仍由 GitHub Acti
 | Dispatch | 只针对有授权的开放 Issue；V1 可以做资格检查、维护者显式 dispatch，不自动跨仓库批量派工 |
 | Recovery | 使用 AGT-059 的 `fresh/recoverable/contract_drift/recovery_failed/delivery_retry_only/delivery_complete` 和原 Candidate Artifact，不能重建恢复数据库 |
 | Capacity / cost | 排队数、真实 Run 时长、可用的 model usage；没有 usage/成本数据就标 unknown，不推定精确花费 |
-| Escalation | **Planned under AGT-068:** 同卡两轮返工仍失败，第三轮起交由维护者亲自接手；当前 shared Worker 尚未实现自动 Return-to-Worker / 自动 escalation |
+| Escalation | AGT-068：同卡最多两轮自动返工；第三次 `REPAIR` 进入 `ESCALATED`，后续 dispatch 不得重置预算或再次自动调用模型 |
 
 Foreman/Workforce 派工前必须核对 Issue 合同与授权、caller 是否在实际默认分支注册、当前活跃 Run、能力/模型 route 是否允许、密钥是否可用（只读可用性、不暴露值）、历史 Candidate/Verify 状态、返工升级和预算。任何 `recovery_failed`、冲突或未核实的权限必须 fail closed。
 
