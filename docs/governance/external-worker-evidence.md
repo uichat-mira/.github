@@ -17,6 +17,7 @@ The `mira-external-worker-<run_id>` Artifact contains bounded Worker/Capture evi
 - `worker-run.json` — Worker/Capture run identity, provider/model route, stage outcomes (including Candidate/Verify evidence re-publication on Delivery-only retry), Recovery mode/source, Candidate pointer/recoverability and permission metadata;
 - `identity.txt`, `issue.json`, trusted-maintainer comment snapshot and `provider-route.json` — durable handoff inputs needed by later trusted stages;
 - `contract.json`, `validation-contract.json`, `recovery-state.json`, Recovery context and discovered pointer metadata when applicable;
+- `validation-contract.json` is resolved before provider/model execution and records profile/legacy mode, tier ceiling, executable profile identity, dispatch result and explicit contract gaps;
 - metadata-only trajectory/session summary;
 - bounded Worker output;
 - `candidate-status.json` plus bounded Candidate capture stdout/stderr;
