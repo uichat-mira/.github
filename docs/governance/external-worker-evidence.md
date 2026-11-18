@@ -2,6 +2,8 @@
 
 Status: active Organization guidance.
 
+Lifecycle and role semantics are owned by [`../engineering/external-worker-lifecycle.md`](../engineering/external-worker-lifecycle.md). This document owns only the bounded evidence/artifact contract and must not redefine the Worker lifecycle.
+
 The Mira External Worker emits bounded, role-specific evidence artifacts across Worker/Capture, Verify, Delivery, and Recovery. These artifacts complement GitHub Actions logs; they do not replace the GitHub Issue, Candidate, branch, commit, pull request, or Actions run as the durable engineering ledger.
 
 ## Package
