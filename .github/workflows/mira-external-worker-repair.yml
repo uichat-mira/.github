@@ -1,0 +1,658 @@
+name: Mira External Worker Repair Round
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      base_branch:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+      contract_fingerprint:
+        required: true
+        type: string
+      source_candidate_artifact_name:
+        required: true
+        type: string
+      source_validation_artifact_name:
+        required: true
+        type: string
+      initial_worker_handoff_artifact_name:
+        required: true
+        type: string
+      verification_command:
+        required: false
+        type: string
+        default: ''
+      validation_profile:
+        required: false
+        type: string
+        default: ''
+      validation_max_tier:
+        required: false
+        type: string
+        default: L3
+      timeout_minutes:
+        required: false
+        type: number
+        default: 60
+      free_mode:
+        required: false
+        type: boolean
+        default: false
+      repair_round:
+        required: true
+        type: number
+    secrets:
+      opencode_go_api_key:
+        required: false
+      provider_api_key:
+        required: false
+    outputs:
+      state:
+        value: ${{ jobs.outcome.outputs.state }}
+      repair_round:
+        value: ${{ inputs.repair_round }}
+      next_repair_round:
+        value: ${{ jobs.outcome.outputs.next_repair_round }}
+      candidate_artifact_name:
+        value: ${{ jobs.repair_worker.outputs.candidate_artifact_name }}
+      candidate_artifact_id:
+        value: ${{ jobs.repair_worker.outputs.candidate_artifact_id }}
+      candidate_artifact_digest:
+        value: ${{ jobs.repair_worker.outputs.candidate_artifact_digest }}
+      candidate_patch_sha256:
+        value: ${{ jobs.repair_worker.outputs.candidate_patch_sha256 }}
+      candidate_tree_oid:
+        value: ${{ jobs.repair_worker.outputs.candidate_tree_oid }}
+      worker_handoff_artifact_name:
+        value: ${{ jobs.repair_worker.outputs.worker_handoff_artifact_name }}
+      verification_artifact_name:
+        value: ${{ jobs.verify.outputs.verification_artifact_name }}
+      validation_result:
+        value: ${{ jobs.verify.outputs.validation_result }}
+      verification_terminal_status:
+        value: ${{ jobs.verify.outputs.terminal_status }}
+
+permissions:
+  actions: read
+  contents: read
+  issues: none
+  pull-requests: none
+
+jobs:
+  repair_worker:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: none
+      pull-requests: none
+    outputs:
+      candidate_artifact_name: ${{ steps.names.outputs.candidate_artifact_name }}
+      candidate_artifact_id: ${{ steps.candidate_upload.outputs.artifact-id }}
+      candidate_artifact_digest: ${{ steps.candidate_upload.outputs.artifact-digest }}
+      candidate_patch_sha256: ${{ steps.candidate.outputs.patch_sha256 }}
+      candidate_tree_oid: ${{ steps.candidate.outputs.tree_oid }}
+      worker_handoff_artifact_name: ${{ steps.names.outputs.worker_handoff_artifact_name }}
+
+    steps:
+      - name: Validate bounded repair round
+        shell: bash
+        env:
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+        run: |
+          set -euo pipefail
+          case "$REPAIR_ROUND" in
+            1|2) ;;
+            *) echo "::error::Repair round must be 1 or 2." >&2; exit 1 ;;
+          esac
+
+      - name: Checkout exact Candidate base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Define repair artifact names
+        id: names
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+        run: |
+          set -euo pipefail
+          echo "candidate_artifact_name=mira-external-worker-candidate-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-repair-${REPAIR_ROUND}" >> "$GITHUB_OUTPUT"
+          echo "worker_handoff_artifact_name=mira-external-worker-repair-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-round-${REPAIR_ROUND}" >> "$GITHUB_OUTPUT"
+
+      - name: Download original trusted Worker handoff
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.initial_worker_handoff_artifact_name }}
+          path: ${{ runner.temp }}/mira-worker/handoff
+
+      - name: Download source Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_candidate_artifact_name }}
+          path: ${{ runner.temp }}/mira-worker/source-candidate
+
+      - name: Download trusted Validation evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_validation_artifact_name }}
+          path: ${{ runner.temp }}/mira-worker/source-verify
+
+      - name: Load trusted repair primitives and handoff inputs
+        id: tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          cp "$root/handoff/issue.json" "$root/issue.json"
+          cp "$root/handoff/maintainer-comments.json" "$root/maintainer-comments.json"
+          cp "$root/handoff/provider-route.json" "$root/provider-route.json"
+          test -s "$root/source-verify/validation-report.json"
+
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
+            -o "$root/trusted-candidate.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-repair/repair.py" \
+            -o "$root/trusted-repair.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-runtime/run-worker.sh" \
+            -o "$root/trusted-worker-runtime.sh"
+          test -s "$root/trusted-candidate.py"
+          test -s "$root/trusted-repair.py"
+          test -s "$root/trusted-worker-runtime.sh"
+
+      - name: Restore exact rejected Candidate
+        id: restore
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ inputs.contract_fingerprint }}
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          source_round="$((REPAIR_ROUND - 1))"
+          python3 "$root/trusted-candidate.py" restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/source-candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number "$ISSUE_NUMBER" \
+            --expected-repair-round "$source_round" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT" \
+            | tee "$root/source-restore.json"
+
+      - name: Build bounded trusted repair context
+        id: repair_context
+        shell: bash
+        env:
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+          VALIDATION_ARTIFACT_NAME: ${{ inputs.source_validation_artifact_name }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          python3 "$root/trusted-repair.py" context \
+            --issue-json "$root/issue.json" \
+            --amendments-json "$root/maintainer-comments.json" \
+            --candidate-manifest "$root/source-candidate/candidate.json" \
+            --validation-report "$root/source-verify/validation-report.json" \
+            --validation-artifact-name "$VALIDATION_ARTIFACT_NAME" \
+            --repair-round "$REPAIR_ROUND" \
+            --output "$root/repair-context.json"
+
+      - name: Load current Organization policy and pinned Skill
+        id: policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FREE_MODE: ${{ inputs.free_mode }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          mkdir -p "${HOME}/.agents/skills/execute-work-item"
+
+          gh api "repos/uichat-mira/.github/contents/AGENTS.md?ref=main" --jq '.content' |
+            tr -d '\n' | base64 --decode > "$root/org-AGENTS.md"
+          gh api "repos/uichat-mira/.github/contents/skills/execute-work-item/SKILL.md?ref=d8ba9f80b5736fa10e4ac10041b501ff5d39e5d9" --jq '.content' |
+            tr -d '\n' | base64 --decode > "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+
+          test -s "$root/org-AGENTS.md"
+          test -s "${HOME}/.agents/skills/execute-work-item/SKILL.md"
+          if test "$FREE_MODE" = "true"; then
+            for local_config in opencode.json opencode.jsonc .opencode.json .opencode.jsonc; do
+              if test -e "$local_config" || test -L "$local_config"; then
+                echo "::error::Free repair Worker refuses project OpenCode config: $local_config" >&2
+                exit 1
+              fi
+            done
+            for local_source in .opencode .agents .claude; do
+              if test -e "$local_source" || test -L "$local_source"; then
+                echo "::error::Free repair Worker refuses project Skill/config source: $local_source" >&2
+                exit 1
+              fi
+            done
+            if find . -type f -path '*/execute-work-item/SKILL.md' -print -quit | grep -q .; then
+              echo "::error::Free repair Worker refuses a project-defined execute-work-item Skill." >&2
+              exit 1
+            fi
+          fi
+          mkdir -p "${HOME}/.config/opencode/skills/execute-work-item"
+          cp "${HOME}/.agents/skills/execute-work-item/SKILL.md" "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
+          cmp -s "${HOME}/.agents/skills/execute-work-item/SKILL.md" "${HOME}/.config/opencode/skills/execute-work-item/SKILL.md"
+          test -s AGENTS.md
+
+      - name: Resolve frozen provider route
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          route="${RUNNER_TEMP}/mira-worker/provider-route.json"
+          provider="$(jq -r '.provider // ""' "$route")"
+          model="$(jq -r '.model // ""' "$route")"
+          model_route="$(jq -r '.model_route // ""' "$route")"
+          test -n "$provider"
+          test -n "$model"
+          test -n "$model_route"
+          {
+            echo "provider=$provider"
+            echo "model=$model"
+            echo "model_route=$model_route"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned OpenCode CLI
+        id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.3.0
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Verify OpenCode version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(opencode --version)" = "opencode v2.3.0"
+
+      - name: Run bounded repair Worker
+        id: worker
+        shell: bash
+        env:
+          PROVIDER: ${{ steps.route.outputs.provider }}
+          FREE_MODE: ${{ inputs.free_mode }}
+          MODEL_ROUTE: ${{ steps.route.outputs.model_route }}
+          OPENCODE_GO_API_KEY: ${{ secrets.opencode_go_api_key }}
+          PROVIDER_API_KEY: ${{ secrets.provider_api_key }}
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          OPENCODE_DISABLE_DEFAULT_PLUGINS: "1"
+          OPENCODE_DISABLE_LSP_DOWNLOAD: "1"
+          OPENCODE_DISABLE_MODELS_FETCH: "1"
+          NO_COLOR: "1"
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}
+          WORKER_CONTEXT_FILE: ${{ runner.temp }}/mira-worker/repair-context.json
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/mira-worker/trusted-worker-runtime.sh"
+
+      - name: Capture next Candidate generation
+        id: candidate
+        if: ${{ always() && steps.restore.outcome == 'success' && steps.worker.outcome != 'skipped' }}
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ inputs.contract_fingerprint }}
+          PROVIDER: ${{ steps.route.outputs.provider }}
+          MODEL: ${{ steps.route.outputs.model }}
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+          ARTIFACT_NAME: ${{ steps.names.outputs.candidate_artifact_name }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          candidate_dir="$root/candidate"
+          rm -rf "$candidate_dir"
+          python3 "$root/trusted-candidate.py" capture \
+            --repo "$GITHUB_WORKSPACE" \
+            --output "$candidate_dir" \
+            --repository "$GITHUB_REPOSITORY" \
+            --issue-number "$ISSUE_NUMBER" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repair-round "$REPAIR_ROUND" \
+            --base-branch "$BASE_BRANCH" \
+            --base-sha "$BASE_SHA" \
+            --contract-fingerprint "$CONTRACT_FINGERPRINT" \
+            --worker-outcome "${WORKER_OUTCOME:-unknown}" \
+            --provider "${PROVIDER:-}" \
+            --model "${MODEL:-}" \
+            > "$root/candidate-capture.stdout" \
+            2> "$root/candidate-capture.stderr"
+
+          patch_sha256="$(jq -r '.candidate_patch_sha256' "$candidate_dir/candidate.json")"
+          tree_oid="$(jq -r '.candidate_tree_oid' "$candidate_dir/candidate.json")"
+          actual_round="$(jq -r '.repair_round' "$candidate_dir/candidate.json")"
+          test "$actual_round" = "$REPAIR_ROUND"
+          {
+            echo "artifact_name=$ARTIFACT_NAME"
+            echo "patch_sha256=$patch_sha256"
+            echo "tree_oid=$tree_oid"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload repaired Candidate
+        id: candidate_upload
+        if: ${{ always() && steps.candidate.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.candidate_artifact_name }}
+          path: |
+            ${{ runner.temp }}/mira-worker/candidate/candidate.patch
+            ${{ runner.temp }}/mira-worker/candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload repair Worker handoff
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.worker_handoff_artifact_name }}
+          path: |
+            ${{ runner.temp }}/mira-worker/issue.json
+            ${{ runner.temp }}/mira-worker/maintainer-comments.json
+            ${{ runner.temp }}/mira-worker/provider-route.json
+            ${{ runner.temp }}/mira-worker/repair-context.json
+            ${{ runner.temp }}/mira-worker/source-restore.json
+            ${{ runner.temp }}/mira-worker/trajectory.jsonl
+            ${{ runner.temp }}/mira-worker/session-summary.json
+            ${{ runner.temp }}/mira-worker/worker-output.txt
+            ${{ runner.temp }}/mira-worker/worker-output-meta.json
+            ${{ runner.temp }}/mira-worker/candidate-capture.stdout
+            ${{ runner.temp }}/mira-worker/candidate-capture.stderr
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require usable repair Candidate
+        if: always()
+        shell: bash
+        env:
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          CONTEXT_OUTCOME: ${{ steps.repair_context.outcome }}
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          VERSION_OUTCOME: ${{ steps.version.outcome }}
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.candidate_upload.outcome }}
+        run: |
+          set -euo pipefail
+          for value in "$RESTORE_OUTCOME" "$CONTEXT_OUTCOME" "$POLICY_OUTCOME" "$INSTALL_OUTCOME" "$VERSION_OUTCOME" "$WORKER_OUTCOME" "$CANDIDATE_OUTCOME" "$UPLOAD_OUTCOME"; do
+            test "$value" = "success"
+          done
+
+  verify:
+    needs: repair_worker
+    if: ${{ needs.repair_worker.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: none
+      pull-requests: none
+    outputs:
+      verification_artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      terminal_status: ${{ steps.meta.outputs.terminal_status }}
+      validation_result: ${{ steps.meta.outputs.validation_result }}
+
+    steps:
+      - name: Checkout exact Candidate base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download repaired Candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.repair_worker.outputs.candidate_artifact_name }}
+          path: ${{ runner.temp }}/mira-repair-verify/candidate
+
+      - name: Load trusted Candidate and Validation primitives
+        shell: bash
+        env:
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-repair-verify"
+          mkdir -p "$root"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
+            -o "$root/trusted-candidate.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
+            -o "$root/trusted-validation.py"
+          test -s "$root/trusted-candidate.py"
+          test -s "$root/trusted-validation.py"
+
+          profile_file="$root/validation-profiles.json"
+          rm -f "$profile_file"
+          if test -n "$VALIDATION_PROFILE" && git cat-file -e "${BASE_SHA}:.github/mira-validation-profiles.json" 2>/dev/null; then
+            git show "${BASE_SHA}:.github/mira-validation-profiles.json" > "$profile_file"
+          fi
+
+      - name: Restore exact repaired Candidate
+        id: restore
+        shell: bash
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ inputs.contract_fingerprint }}
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+          EXPECTED_PATCH: ${{ needs.repair_worker.outputs.candidate_patch_sha256 }}
+          EXPECTED_TREE: ${{ needs.repair_worker.outputs.candidate_tree_oid }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-repair-verify"
+          python3 "$root/trusted-candidate.py" restore \
+            --repo "$GITHUB_WORKSPACE" \
+            --candidate-dir "$root/candidate" \
+            --expected-repository "$GITHUB_REPOSITORY" \
+            --expected-issue-number "$ISSUE_NUMBER" \
+            --expected-repair-round "$REPAIR_ROUND" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-contract-fingerprint "$CONTRACT_FINGERPRINT" \
+            | tee "$root/restore-result.json"
+          test "$(jq -r '.candidate_patch_sha256' "$root/restore-result.json")" = "$EXPECTED_PATCH"
+          test "$(jq -r '.candidate_tree_oid' "$root/restore-result.json")" = "$EXPECTED_TREE"
+
+      - name: Run trusted Validation on repaired Candidate
+        id: validation
+        shell: bash
+        env:
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
+          VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-repair-verify"
+          python3 "$root/trusted-validation.py" run \
+            --repo "$GITHUB_WORKSPACE" \
+            --profile-file "$root/validation-profiles.json" \
+            --profile "$VALIDATION_PROFILE" \
+            --max-tier "$VALIDATION_MAX_TIER" \
+            --legacy-command "$VERIFICATION_COMMAND" \
+            --restore-outcome success \
+            --output "$root/validation-report.json" \
+            --log "$root/validation.log"
+          cp "$root/validation.log" "$root/verification.log"
+
+      - name: Finalize trusted repair Verify evidence
+        id: meta
+        if: always()
+        shell: bash
+        env:
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          CONTRACT_FINGERPRINT: ${{ inputs.contract_fingerprint }}
+          PATCH: ${{ needs.repair_worker.outputs.candidate_patch_sha256 }}
+          TREE: ${{ needs.repair_worker.outputs.candidate_tree_oid }}
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          VALIDATION_OUTCOME: ${{ steps.validation.outcome }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-repair-verify"
+          artifact_name="mira-external-worker-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-repair-${REPAIR_ROUND}"
+          validation_result="BLOCKED"
+          if test -s "$root/validation-report.json"; then
+            validation_result="$(jq -r '.result' "$root/validation-report.json")"
+          fi
+          case "$validation_result" in
+            PASS|REPAIR|BLOCKED|VALIDATION_GAP) ;;
+            *) echo "::error::Invalid structured Validation result." >&2; exit 1 ;;
+          esac
+          if test "$RESTORE_OUTCOME" != "success"; then
+            validation_result="BLOCKED"
+          fi
+          terminal_status="failure"
+          if test "$RESTORE_OUTCOME" = "success" && test "$VALIDATION_OUTCOME" = "success" && test "$validation_result" = "PASS"; then
+            terminal_status="success"
+          fi
+          {
+            echo "artifact_name=$artifact_name"
+            echo "validation_result=$validation_result"
+            echo "terminal_status=$terminal_status"
+          } >> "$GITHUB_OUTPUT"
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson repair_round "$REPAIR_ROUND" \
+            --arg base_sha "$BASE_SHA" \
+            --arg patch "$PATCH" \
+            --arg tree "$TREE" \
+            --arg contract "$CONTRACT_FINGERPRINT" \
+            --arg validation_result "$validation_result" \
+            --arg terminal_status "$terminal_status" \
+            '{
+              schema_version:2,
+              job_role:"verify",
+              repository:$repository,
+              run_id:$run_id,
+              run_attempt:$run_attempt,
+              repair_round:$repair_round,
+              base_sha:$base_sha,
+              candidate_patch_sha256:$patch,
+              candidate_tree_oid:$tree,
+              contract_fingerprint:$contract,
+              validation_result:$validation_result,
+              terminal_status:$terminal_status,
+              github_permissions:{actions:"read",contents:"read",issues:"none",pull_requests:"none"},
+              provider_credentials_present:false,
+              github_mutation_authority:false
+            }' > "$root/verify-run.json"
+
+      - name: Upload repair Verify evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/mira-repair-verify/verify-run.json
+            ${{ runner.temp }}/mira-repair-verify/restore-result.json
+            ${{ runner.temp }}/mira-repair-verify/validation-report.json
+            ${{ runner.temp }}/mira-repair-verify/validation.log
+            ${{ runner.temp }}/mira-repair-verify/verification.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require trustworthy repair Verify evidence
+        if: always()
+        shell: bash
+        env:
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          VALIDATION_OUTCOME: ${{ steps.validation.outcome }}
+          VALIDATION_RESULT: ${{ steps.meta.outputs.validation_result }}
+        run: |
+          set -euo pipefail
+          test "$RESTORE_OUTCOME" = "success"
+          test "$VALIDATION_OUTCOME" = "success"
+          case "$VALIDATION_RESULT" in
+            PASS|REPAIR|BLOCKED|VALIDATION_GAP) ;;
+            *) exit 1 ;;
+          esac
+
+  outcome:
+    needs:
+      - repair_worker
+      - verify
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.decision.outputs.state }}
+      next_repair_round: ${{ steps.decision.outputs.next_repair_round }}
+    steps:
+      - name: Load trusted repair state helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-repair/repair.py" \
+            -o "${RUNNER_TEMP}/trusted-repair.py"
+          test -s "${RUNNER_TEMP}/trusted-repair.py"
+
+      - name: Decide bounded repair outcome
+        id: decision
+        shell: bash
+        env:
+          WORKER_JOB_RESULT: ${{ needs.repair_worker.result }}
+          VERIFY_JOB_RESULT: ${{ needs.verify.result }}
+          VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
+          REPAIR_ROUND: ${{ inputs.repair_round }}
+        run: |
+          set -euo pipefail
+          precondition="ok"
+          validation_result="${VALIDATION_RESULT:-BLOCKED}"
+          if test "$WORKER_JOB_RESULT" != "success"; then
+            precondition="worker_failure"
+            validation_result="BLOCKED"
+          elif test "$VERIFY_JOB_RESULT" != "success"; then
+            precondition="verify_infrastructure"
+            validation_result="BLOCKED"
+          fi
+          python3 "${RUNNER_TEMP}/trusted-repair.py" decide \
+            --validation-result "$validation_result" \
+            --completed-rounds "$REPAIR_ROUND" \
+            --precondition "$precondition" \
+            --output "${RUNNER_TEMP}/repair-outcome.json"
+          state="$(jq -r '.state' "${RUNNER_TEMP}/repair-outcome.json")"
+          next_round="$(jq -r '.next_repair_round // ""' "${RUNNER_TEMP}/repair-outcome.json")"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "next_repair_round=$next_round" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bounded repair outcome
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-repair-outcome-${{ github.run_id }}-${{ github.run_attempt }}-round-${{ inputs.repair_round }}
+          path: ${{ runner.temp }}/repair-outcome.json
+          if-no-files-found: error
+          retention-days: 14
