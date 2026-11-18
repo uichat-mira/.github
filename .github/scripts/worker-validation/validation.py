@@ -191,6 +191,44 @@ def _append_log(log_path: Path, data: bytes) -> bool:
     return truncated
 
 
+def _candidate_state_digest(repo: str) -> str:
+    h = hashlib.sha256()
+    for command in (
+        ["git", "diff", "--binary", "--"],
+        ["git", "diff", "--cached", "--binary", "--"],
+    ):
+        proc = subprocess.run(command, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0:
+            raise ValidationError(proc.stderr.decode("utf-8", errors="replace") or "git diff failed")
+        h.update(b"\0".join(part.encode("utf-8") for part in command))
+        h.update(b"\0")
+        h.update(proc.stdout)
+
+    proc = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise ValidationError(proc.stderr.decode("utf-8", errors="replace") or "git ls-files failed")
+    for raw in sorted(part for part in proc.stdout.split(b"\0") if part):
+        rel = raw.decode("utf-8", errors="surrogateescape")
+        path = Path(repo) / rel
+        h.update(b"untracked\0")
+        h.update(raw)
+        h.update(b"\0")
+        if path.is_symlink():
+            h.update(b"symlink\0")
+            h.update(path.readlink().as_posix().encode("utf-8", errors="surrogateescape"))
+        elif path.is_file():
+            h.update(path.read_bytes())
+        else:
+            h.update(b"special")
+    return "sha256:" + h.hexdigest()
+
+
 def _run_command(command: str, cwd: str, log_path: Path, label: str) -> tuple[int, int, bool]:
     started = time.monotonic()
     header = f"\n## {label}\n$ {command}\n".encode("utf-8")
@@ -383,7 +421,21 @@ def run_validation(args: argparse.Namespace) -> int:
                             ))
                             continue
 
+                        before_state = _candidate_state_digest(repo)
                         rc, duration_ms, truncated = _run_command(command, repo, log_path, f"{tier} {cid}")
+                        after_state = _candidate_state_digest(repo)
+                        if after_state != before_state:
+                            checks.append(_check_record(
+                                cid=cid, tier=tier, requirement=requirement,
+                                command=command, status="mutated_candidate",
+                                duration_ms=duration_ms, exit_code=rc,
+                                reason="validation command changed tracked or non-ignored Candidate state",
+                                failure_result="BLOCKED",
+                            ))
+                            overall = "BLOCKED"
+                            failed_check = cid
+                            continue
+
                         if rc == 127:
                             checks.append(_check_record(
                                 cid=cid, tier=tier, requirement=requirement,
