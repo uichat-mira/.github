@@ -28,16 +28,22 @@ Keeping the pointer on the original Issue is deliberate: if an Actions Artifact 
 
 Recovery compatibility uses `.github/scripts/worker-candidate/recovery.py fingerprint`.
 
-The canonical fingerprint contains:
+The canonical fingerprint always contains:
 
 - Issue number;
 - normalized Issue title;
 - normalized Issue body;
 - eligible trusted maintainer contract amendments;
-- explicit delivery base branch name;
-- SHA-256 of the caller-owned verification command (the command itself is not copied into the pointer).
+- explicit delivery base branch name.
 
-This keeps a Candidate from being silently reused after the caller changes the target branch or the trusted verification profile. The current exact base commit remains a separate Candidate identity field so ordinary advancement of the same base branch can use the controlled three-way path.
+Validation identity depends on the dispatch mode:
+
+- **legacy mode** preserves the existing `mira-contract-v2` shape and SHA-256 of the caller-owned `verification_command`; this keeps existing Candidates recoverable during migration;
+- **profile mode** uses `mira-contract-v3-validation` and binds the selected Validation Profile name, dispatch max tier, and the normalized repository-owned Validation contract digest from the exact current base.
+
+Therefore changing a profile definition or tier ceiling becomes contract drift instead of silently reusing an old Candidate under different validation requirements. The current exact base commit remains a separate Candidate identity field so ordinary advancement of the same base branch can use the controlled three-way path.
+
+The Validation Profile schema is owned by [`../engineering/external-worker-validation.md`](../engineering/external-worker-validation.md).
 
 Normalization converts CRLF/CR to LF, removes trailing whitespace per line, and trims leading/trailing blank lines.
 
