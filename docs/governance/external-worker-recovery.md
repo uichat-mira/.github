@@ -2,6 +2,8 @@
 
 Status: active Organization guidance for AGT-059.
 
+Lifecycle and role semantics are owned by [`../engineering/external-worker-lifecycle.md`](../engineering/external-worker-lifecycle.md). This document owns only Candidate discovery, compatibility, continuation, and Delivery-only retry semantics.
+
 Candidate Recovery lets a later Worker run reuse the latest trustworthy Candidate for the same GitHub Issue without creating a second task database. The GitHub Issue remains the work contract and outcome source of truth; GitHub Actions run/artifact state remains execution evidence.
 
 ## Recovery index
