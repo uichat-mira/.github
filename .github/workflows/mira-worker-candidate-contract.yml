@@ -96,7 +96,8 @@ jobs:
           assert "structured_repair_context_build_failed" in worker
           assert '--repair-round "$worker_repair_round"' in worker or '--repair-round "$REPAIR_ROUND"' in worker
           assert 'worker_repair_round="$source_repair_round"' in worker
-          assert 'worker_repair_round="$(jq -r '.next_repair_round // ""'' in worker
+          assert 'worker_repair_round="$(jq -r ' in worker
+          assert '.next_repair_round // ""' in worker
           assert '--repair-round "$REPAIR_ROUND"' in worker
           assert "Capture durable Candidate" in worker
           assert "Commit/push or reuse exact verified Candidate branch" not in worker
