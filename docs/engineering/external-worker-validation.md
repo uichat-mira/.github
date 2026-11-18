@@ -163,6 +163,8 @@ Only `PASS` authorizes ordinary Delivery.
 
 A report is evidence, not Issue acceptance.
 
+Recovery preserves the distinction: `REPAIR` may continue the Candidate; `BLOCKED` and `VALIDATION_GAP` do not automatically invoke another model under the same validation contract. AGT-068 will own the future in-lifecycle Return-to-Worker loop.
+
 ## 7. Legacy compatibility
 
 When `validation_profile` is empty, the Worker preserves the existing `verification_command` path:
