@@ -1,9 +1,9 @@
 # 号脉（How Am I）× Reporter × Worker Workforce — V1 技术合同
 
-Status: **Trusted Stage Reporter implemented and negative-path live E2E observed; successful Candidate→Verify→Delivery E2E and Live Heartbeat not yet accepted**  
+Status: **Trusted Stage Reporter implemented and negative-path real E2E observed; successful Candidate→Verify→Delivery E2E and Live Heartbeat not yet accepted**  
 Review date: 2026-11-17  
 Protocol owner: uichat-mira/.github  
-Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Control Room
+Target: Mira External Worker / paid Worker callers / Worker Workforce / Control Room
 
 **Ownership boundary:** current External Worker lifecycle/role semantics are owned by [`external-worker-lifecycle.md`](external-worker-lifecycle.md). This document owns 号脉, Reporter, Workforce and Control Room integration contracts only; it must not redefine Candidate/Verify/Delivery/Recovery semantics.
 
@@ -204,7 +204,7 @@ Worker Workforce 是调度与可观察控制面，底层执行仍由 GitHub Acti
 | Dispatch | 只针对有授权的开放 Issue；V1 可以做资格检查、维护者显式 dispatch，不自动跨仓库批量派工 |
 | Recovery | 使用 AGT-059 的 `fresh/recoverable/contract_drift/recovery_failed/delivery_retry_only/delivery_complete` 和原 Candidate Artifact，不能重建恢复数据库 |
 | Capacity / cost | 排队数、真实 Run 时长、可用的 model usage；没有 usage/成本数据就标 unknown，不推定精确花费 |
-| Escalation | 同卡两轮返工仍失败，第三轮起交由维护者亲自接手，而不是无限自动重派 |
+| Escalation | **Planned under AGT-068:** 同卡两轮返工仍失败，第三轮起交由维护者亲自接手；当前 shared Worker 尚未实现自动 Return-to-Worker / 自动 escalation |
 
 Foreman/Workforce 派工前必须核对 Issue 合同与授权、caller 是否在实际默认分支注册、当前活跃 Run、能力/模型 route 是否允许、密钥是否可用（只读可用性、不暴露值）、历史 Candidate/Verify 状态、返工升级和预算。任何 `recovery_failed`、冲突或未核实的权限必须 fail closed。
 
