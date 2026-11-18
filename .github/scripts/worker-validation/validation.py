@@ -138,7 +138,6 @@ def selected_profile(profile_file: str | Path, profile_name: str) -> tuple[dict[
 
 def contract(args: argparse.Namespace) -> int:
     profile_name = args.profile or ""
-    max_tier = validate_max_tier(args.max_tier)
     if not profile_name:
         legacy = args.legacy_command or ""
         payload = {
@@ -157,6 +156,7 @@ def contract(args: argparse.Namespace) -> int:
         dump_json(payload, args.output)
         return 0
 
+    max_tier = validate_max_tier(args.max_tier)
     if not PROFILE_RE.fullmatch(profile_name):
         profile, state, errors = None, "profile_invalid", ["invalid validation profile identifier"]
     else:
