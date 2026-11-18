@@ -41,8 +41,8 @@ def run_validation(root: Path, profile_file: Path, *, profile="feature", max_tie
     args.max_tier = max_tier
     args.legacy_command = legacy_command
     args.restore_outcome = restore_outcome
-    args.output = str(root / "report.json")
-    args.log = str(root / "validation.log")
+    args.output = str(root / ".git" / "report.json")
+    args.log = str(root / ".git" / "validation.log")
     rc = MODULE.run_validation(args)
     return rc, json.loads(Path(args.output).read_text())
 
