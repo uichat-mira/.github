@@ -110,6 +110,13 @@ If the prior Candidate reached Verify and Verify failed, the next Worker receive
 
 Prior Worker narration remains diagnostic only and never becomes trusted PASS evidence.
 
+For structured AGT-067 Verify evidence, Recovery also honors the Validation result instead of collapsing every non-PASS into code repair:
+
+- `REPAIR` remains recoverable and may continue the prior Candidate on a later dispatch;
+- `BLOCKED` and `VALIDATION_GAP` fail closed under the same contract and do not start the model again;
+- changing the applicable profile/max-tier/contract produces contract drift first, so a maintainer can deliberately change validation requirements rather than repeatedly redispatching the same blocked contract;
+- historical Verify evidence without `validation_result` preserves the pre-AGT-067 recoverable failure behavior.
+
 ## Delivery-only retry
 
 When prior Verify evidence says PASS for the same Candidate identity and Delivery is incomplete/failed:
