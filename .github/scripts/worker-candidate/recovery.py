@@ -383,6 +383,7 @@ def decide(args: argparse.Namespace) -> int:
             if isinstance(pointer, dict) and str(pointer.get("candidate_origin_repair_round", 0)).isdigit()
             else 0
         ),
+        "next_repair_round": None,
     }
 
     try:
@@ -556,6 +557,11 @@ def decide(args: argparse.Namespace) -> int:
                     else "prior_verification_failed"
                 ),
                 validation_result=validation_result,
+                next_repair_round=(
+                    result["repair_round"] + 1
+                    if validation_result == "REPAIR"
+                    else None
+                ),
             )
         dump_json(result, args.output)
         return 0
