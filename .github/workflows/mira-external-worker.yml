@@ -105,6 +105,7 @@ jobs:
       recovered_verify_upload_outcome: ${{ steps.recovered_verify_upload.outcome }}
       candidate_patch_sha256: ${{ steps.handoff.outputs.candidate_patch_sha256 }}
       candidate_tree_oid: ${{ steps.handoff.outputs.candidate_tree_oid }}
+      candidate_repair_round: ${{ steps.handoff.outputs.candidate_repair_round }}
       contract_fingerprint: ${{ steps.handoff.outputs.contract_fingerprint }}
       ambiguity_guard: ${{ steps.handoff.outputs.ambiguity_guard }}
       verification_artifact_name: ${{ steps.handoff.outputs.verification_artifact_name }}
@@ -656,7 +657,7 @@ jobs:
 
       - name: Enforce Recovery fail-closed boundary
         id: recovery_gate
-        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' }}
+        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' || steps.recovery.outputs.mode == 'contract_drift' || steps.recovery.outputs.mode == 'escalated' }}
         shell: bash
         env:
           RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
@@ -1263,6 +1264,20 @@ jobs:
               echo "model=${NORMAL_MODEL:-}"
             } >> "$GITHUB_OUTPUT"
           fi
+
+          candidate_repair_round=0
+          if test "$mode" = "delivery_retry_only" || test "$mode" = "delivery_complete"; then
+            if test -s "$root/recovery/candidate/candidate.json"; then
+              candidate_repair_round="$(jq -r '.repair_round // 0' "$root/recovery/candidate/candidate.json")"
+            fi
+          elif test -s "$root/candidate/candidate.json"; then
+            candidate_repair_round="$(jq -r '.repair_round // 0' "$root/candidate/candidate.json")"
+          fi
+          case "$candidate_repair_round" in
+            0|1|2) ;;
+            *) echo "::error::Invalid Candidate repair round in handoff." >&2; exit 1 ;;
+          esac
+          echo "candidate_repair_round=$candidate_repair_round" >> "$GITHUB_OUTPUT"
 
       - name: Finalize Worker/Capture evidence
         id: worker_evidence
@@ -1925,6 +1940,146 @@ jobs:
       opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
       provider_api_key: ${{ secrets.provider_api_key }}
 
+  lifecycle_handoff:
+    needs:
+      - worker_capture
+      - verify
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+    if: ${{ always() && needs.worker_capture.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: none
+    outputs:
+      state: ${{ steps.select.outputs.state }}
+      repair_round: ${{ steps.select.outputs.repair_round }}
+      candidate_artifact_name: ${{ steps.select.outputs.candidate_artifact_name }}
+      candidate_artifact_id: ${{ steps.select.outputs.candidate_artifact_id }}
+      candidate_artifact_digest: ${{ steps.select.outputs.candidate_artifact_digest }}
+      candidate_patch_sha256: ${{ steps.select.outputs.candidate_patch_sha256 }}
+      candidate_tree_oid: ${{ steps.select.outputs.candidate_tree_oid }}
+      worker_handoff_artifact_name: ${{ steps.select.outputs.worker_handoff_artifact_name }}
+      verification_artifact_name: ${{ steps.select.outputs.verification_artifact_name }}
+      verification_terminal_status: ${{ steps.select.outputs.verification_terminal_status }}
+      validation_result: ${{ steps.select.outputs.validation_result }}
+    steps:
+      - name: Select current Candidate generation exactly once
+        id: select
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
+          INITIAL_STATE: ${{ needs.initial_repair_outcome.outputs.state }}
+          INITIAL_REPAIR_ROUND: ${{ needs.worker_capture.outputs.candidate_repair_round }}
+          INITIAL_CANDIDATE: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          INITIAL_CANDIDATE_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
+          INITIAL_CANDIDATE_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
+          INITIAL_PATCH: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          INITIAL_TREE: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          INITIAL_VERIFY: ${{ needs.verify.outputs.verification_artifact_name }}
+          INITIAL_VERIFY_STATUS: ${{ needs.verify.outputs.terminal_status }}
+          INITIAL_VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
+          R1_STATE: ${{ needs.repair_round_1.outputs.state }}
+          R1_CANDIDATE: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
+          R1_CANDIDATE_ID: ${{ needs.repair_round_1.outputs.candidate_artifact_id }}
+          R1_CANDIDATE_DIGEST: ${{ needs.repair_round_1.outputs.candidate_artifact_digest }}
+          R1_PATCH: ${{ needs.repair_round_1.outputs.candidate_patch_sha256 }}
+          R1_TREE: ${{ needs.repair_round_1.outputs.candidate_tree_oid }}
+          R1_WORKER_HANDOFF: ${{ needs.repair_round_1.outputs.worker_handoff_artifact_name }}
+          R1_VERIFY: ${{ needs.repair_round_1.outputs.verification_artifact_name }}
+          R1_VERIFY_STATUS: ${{ needs.repair_round_1.outputs.verification_terminal_status }}
+          R1_VALIDATION_RESULT: ${{ needs.repair_round_1.outputs.validation_result }}
+          R2_STATE: ${{ needs.repair_round_2.outputs.state }}
+          R2_CANDIDATE: ${{ needs.repair_round_2.outputs.candidate_artifact_name }}
+          R2_CANDIDATE_ID: ${{ needs.repair_round_2.outputs.candidate_artifact_id }}
+          R2_CANDIDATE_DIGEST: ${{ needs.repair_round_2.outputs.candidate_artifact_digest }}
+          R2_PATCH: ${{ needs.repair_round_2.outputs.candidate_patch_sha256 }}
+          R2_TREE: ${{ needs.repair_round_2.outputs.candidate_tree_oid }}
+          R2_WORKER_HANDOFF: ${{ needs.repair_round_2.outputs.worker_handoff_artifact_name }}
+          R2_VERIFY: ${{ needs.repair_round_2.outputs.verification_artifact_name }}
+          R2_VERIFY_STATUS: ${{ needs.repair_round_2.outputs.verification_terminal_status }}
+          R2_VALIDATION_RESULT: ${{ needs.repair_round_2.outputs.validation_result }}
+          RECOVERED_VERIFY: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+        run: |
+          set -euo pipefail
+          state=""
+          repair_round="${INITIAL_REPAIR_ROUND:-0}"
+          candidate="$INITIAL_CANDIDATE"
+          candidate_id="$INITIAL_CANDIDATE_ID"
+          candidate_digest="$INITIAL_CANDIDATE_DIGEST"
+          patch="$INITIAL_PATCH"
+          tree="$INITIAL_TREE"
+          worker_handoff="mira-external-worker-${GITHUB_RUN_ID}"
+          verify="$INITIAL_VERIFY"
+          verify_status="$INITIAL_VERIFY_STATUS"
+          validation_result="$INITIAL_VALIDATION_RESULT"
+
+          if test "$RECOVERY_MODE" = "delivery_complete"; then
+            state="DELIVERED"
+            verify="$RECOVERED_VERIFY"
+            verify_status="success"
+            validation_result="PASS"
+          elif test "$RECOVERY_MODE" = "delivery_retry_only"; then
+            state="VERIFIED"
+            verify="$RECOVERED_VERIFY"
+            verify_status="success"
+            validation_result="PASS"
+          elif test -n "$R2_STATE"; then
+            state="$R2_STATE"
+            repair_round=2
+            candidate="$R2_CANDIDATE"
+            candidate_id="$R2_CANDIDATE_ID"
+            candidate_digest="$R2_CANDIDATE_DIGEST"
+            patch="$R2_PATCH"
+            tree="$R2_TREE"
+            worker_handoff="$R2_WORKER_HANDOFF"
+            verify="$R2_VERIFY"
+            verify_status="$R2_VERIFY_STATUS"
+            validation_result="$R2_VALIDATION_RESULT"
+          elif test -n "$R1_STATE"; then
+            state="$R1_STATE"
+            repair_round=1
+            candidate="$R1_CANDIDATE"
+            candidate_id="$R1_CANDIDATE_ID"
+            candidate_digest="$R1_CANDIDATE_DIGEST"
+            patch="$R1_PATCH"
+            tree="$R1_TREE"
+            worker_handoff="$R1_WORKER_HANDOFF"
+            verify="$R1_VERIFY"
+            verify_status="$R1_VERIFY_STATUS"
+            validation_result="$R1_VALIDATION_RESULT"
+          else
+            state="$INITIAL_STATE"
+          fi
+
+          case "$state" in
+            VERIFIED|BLOCKED|ESCALATED|DELIVERED) ;;
+            *) echo "::error::No terminal lifecycle state is available: '${state}'." >&2; exit 1 ;;
+          esac
+          case "$repair_round" in
+            0|1|2) ;;
+            *) echo "::error::Invalid lifecycle Candidate repair round." >&2; exit 1 ;;
+          esac
+          test -n "$candidate"
+          test -n "$candidate_id"
+          test -n "$candidate_digest"
+          test -n "$patch"
+          test -n "$tree"
+          test -n "$worker_handoff"
+          {
+            echo "state=$state"
+            echo "repair_round=$repair_round"
+            echo "candidate_artifact_name=$candidate"
+            echo "candidate_artifact_id=$candidate_id"
+            echo "candidate_artifact_digest=$candidate_digest"
+            echo "candidate_patch_sha256=$patch"
+            echo "candidate_tree_oid=$tree"
+            echo "worker_handoff_artifact_name=$worker_handoff"
+            echo "verification_artifact_name=$verify"
+            echo "verification_terminal_status=$verify_status"
+            echo "validation_result=$validation_result"
+          } >> "$GITHUB_OUTPUT"
+
   delivery:
     needs:
       - worker_capture
@@ -1932,7 +2087,8 @@ jobs:
       - initial_repair_outcome
       - repair_round_1
       - repair_round_2
-    if: ${{ always() && needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && (needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only' || needs.initial_repair_outcome.outputs.state == 'VERIFIED' || needs.repair_round_1.outputs.state == 'VERIFIED' || needs.repair_round_2.outputs.state == 'VERIFIED') }}
+      - lifecycle_handoff
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.lifecycle_handoff.result == 'success' && needs.lifecycle_handoff.outputs.state == 'VERIFIED' }}
     permissions:
       contents: write
       issues: none
@@ -1948,78 +2104,30 @@ jobs:
         id: verified_handoff
         shell: bash
         env:
-          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
-          INITIAL_STATE: ${{ needs.initial_repair_outcome.outputs.state }}
-          R1_STATE: ${{ needs.repair_round_1.outputs.state }}
-          R2_STATE: ${{ needs.repair_round_2.outputs.state }}
-          INITIAL_CANDIDATE: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
-          INITIAL_VERIFY: ${{ needs.verify.outputs.verification_artifact_name }}
-          INITIAL_PATCH: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          INITIAL_TREE: ${{ needs.verify.outputs.candidate_tree_oid }}
-          R1_CANDIDATE: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
-          R1_WORKER_HANDOFF: ${{ needs.repair_round_1.outputs.worker_handoff_artifact_name }}
-          R1_VERIFY: ${{ needs.repair_round_1.outputs.verification_artifact_name }}
-          R1_PATCH: ${{ needs.repair_round_1.outputs.candidate_patch_sha256 }}
-          R1_TREE: ${{ needs.repair_round_1.outputs.candidate_tree_oid }}
-          R2_CANDIDATE: ${{ needs.repair_round_2.outputs.candidate_artifact_name }}
-          R2_WORKER_HANDOFF: ${{ needs.repair_round_2.outputs.worker_handoff_artifact_name }}
-          R2_VERIFY: ${{ needs.repair_round_2.outputs.verification_artifact_name }}
-          R2_PATCH: ${{ needs.repair_round_2.outputs.candidate_patch_sha256 }}
-          R2_TREE: ${{ needs.repair_round_2.outputs.candidate_tree_oid }}
-          RECOVERED_VERIFY: ${{ needs.worker_capture.outputs.verification_artifact_name }}
-          RECOVERED_PATCH: ${{ needs.worker_capture.outputs.verified_patch_sha256 }}
-          RECOVERED_TREE: ${{ needs.worker_capture.outputs.verified_tree_oid }}
+          CANDIDATE: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_name }}
+          WORKER_HANDOFF: ${{ needs.lifecycle_handoff.outputs.worker_handoff_artifact_name }}
+          VERIFY: ${{ needs.lifecycle_handoff.outputs.verification_artifact_name }}
+          PATCH: ${{ needs.lifecycle_handoff.outputs.candidate_patch_sha256 }}
+          TREE: ${{ needs.lifecycle_handoff.outputs.candidate_tree_oid }}
+          REPAIR_ROUND: ${{ needs.lifecycle_handoff.outputs.repair_round }}
           CONTRACT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
         run: |
           set -euo pipefail
-          worker_handoff="mira-external-worker-${GITHUB_RUN_ID}"
-          repair_round=0
-
-          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
-            candidate="$INITIAL_CANDIDATE"
-            verify="$RECOVERED_VERIFY"
-            patch="$RECOVERED_PATCH"
-            tree="$RECOVERED_TREE"
-            repair_round=-1
-          elif test "$R2_STATE" = "VERIFIED"; then
-            candidate="$R2_CANDIDATE"
-            worker_handoff="$R2_WORKER_HANDOFF"
-            verify="$R2_VERIFY"
-            patch="$R2_PATCH"
-            tree="$R2_TREE"
-            repair_round=2
-          elif test "$R1_STATE" = "VERIFIED"; then
-            candidate="$R1_CANDIDATE"
-            worker_handoff="$R1_WORKER_HANDOFF"
-            verify="$R1_VERIFY"
-            patch="$R1_PATCH"
-            tree="$R1_TREE"
-            repair_round=1
-          elif test "$INITIAL_STATE" = "VERIFIED"; then
-            candidate="$INITIAL_CANDIDATE"
-            verify="$INITIAL_VERIFY"
-            patch="$INITIAL_PATCH"
-            tree="$INITIAL_TREE"
-            repair_round=0
-          else
-            echo "::error::Delivery has no trusted VERIFIED Candidate generation." >&2
-            exit 1
-          fi
-
-          test -n "$candidate"
-          test -n "$worker_handoff"
-          test -n "$verify"
-          test -n "$patch"
-          test -n "$tree"
+          test -n "$CANDIDATE"
+          test -n "$WORKER_HANDOFF"
+          test -n "$VERIFY"
+          test -n "$PATCH"
+          test -n "$TREE"
+          test -n "$REPAIR_ROUND"
           test -n "$CONTRACT"
           {
-            echo "candidate_artifact_name=$candidate"
-            echo "worker_handoff_artifact_name=$worker_handoff"
-            echo "verification_artifact_name=$verify"
-            echo "candidate_patch_sha256=$patch"
-            echo "candidate_tree_oid=$tree"
+            echo "candidate_artifact_name=$CANDIDATE"
+            echo "worker_handoff_artifact_name=$WORKER_HANDOFF"
+            echo "verification_artifact_name=$VERIFY"
+            echo "candidate_patch_sha256=$PATCH"
+            echo "candidate_tree_oid=$TREE"
             echo "contract_fingerprint=$CONTRACT"
-            echo "repair_round=$repair_round"
+            echo "repair_round=$REPAIR_ROUND"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact verified Candidate base
