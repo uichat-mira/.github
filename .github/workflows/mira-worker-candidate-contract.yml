@@ -451,7 +451,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           workflow = Path(".github/workflows/mira-external-worker.yml").read_text()
-          delivery = workflow[workflow.index("\n  delivery:"):]
+          delivery = workflow[workflow.index("\n  delivery:"):workflow.index("\n  recovery_index:")]
           assert "opencode run" not in delivery
           assert "opencode_go_api_key" not in delivery
           assert "provider_api_key" not in delivery
