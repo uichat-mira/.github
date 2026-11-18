@@ -52,6 +52,9 @@ on:
       provider_api_key:
         description: Run-scoped credential for the selected provider
         required: false
+      haomai_reporter_hmac_secret:
+        description: HMAC signing credential available to the isolated Reporter Job only
+        required: false
     outputs:
       worker_branch:
         description: Isolated worker branch name reserved from the explicit base
@@ -2484,3 +2487,41 @@ jobs:
             --method POST \
             -f body="$body" \
             >/dev/null
+
+  # Separate, trusted GitHub-hosted runner. Never attach this signing secret
+  # to worker_capture or any model-controlled shell / code checkout.
+  trusted_reporter:
+    needs:
+      - worker_capture
+      - verify
+      - delivery
+      - recovery_index
+    if: ${{ always() && needs.worker_capture.result != 'skipped' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: none
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Telemetry outage must not roll back a durable Candidate, Verify, or PR.
+    continue-on-error: true
+    steps:
+      - name: Checkout trusted Organization Reporter (never caller or Candidate)
+        uses: actions/checkout@v4
+        with:
+          repository: uichat-mira/.github
+          ref: main
+          persist-credentials: false
+          sparse-checkout: .github/scripts/haomai-reporter
+
+      - name: Publish bounded trusted stage facts to 号脉
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HAOMAI_REPORTER_HMAC_SECRET: ${{ secrets.haomai_reporter_hmac_secret }}
+          REPORTER_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REPORTER_NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/haomai-reporter/reporter.mjs
