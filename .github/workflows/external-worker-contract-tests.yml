@@ -38,6 +38,9 @@ jobs:
       - name: Check shared Worker runtime shell
         run: bash -n .github/scripts/worker-runtime/run-worker.sh
 
+      - name: Execute shared Worker runtime smoke
+        run: python3 .github/scripts/worker-runtime/test_run_worker.py
+
       - name: Run Validation Profile fixtures
         run: python3 .github/scripts/worker-validation/test_validation.py -v
 
