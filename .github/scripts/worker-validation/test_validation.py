@@ -141,6 +141,21 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(check["command"], command)
             self.assertEqual(check["tier"], "legacy-unclassified")
 
+    def test_legacy_mode_ignores_new_tier_input(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / "legacy-ran"
+            command = f"touch {marker}"
+            _, report = run_validation(
+                root,
+                root / "missing.json",
+                profile="",
+                max_tier="NOT-A-TIER",
+                legacy_command=command,
+            )
+            self.assertEqual(report["result"], "PASS")
+            self.assertTrue(marker.exists())
+
     def test_invalid_profile_schema_becomes_gap(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
