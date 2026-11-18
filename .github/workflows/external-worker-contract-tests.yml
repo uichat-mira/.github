@@ -32,7 +32,8 @@ jobs:
             .github/scripts/worker-candidate/recovery.py \
             .github/scripts/worker-candidate/test_recovery_validation_contract.py \
             .github/scripts/worker-repair/repair.py \
-            .github/scripts/worker-repair/test_repair.py
+            .github/scripts/worker-repair/test_repair.py \
+            .github/scripts/worker-repair/lifecycle_fixture.py
 
       - name: Check shared Worker runtime shell
         run: bash -n .github/scripts/worker-runtime/run-worker.sh
@@ -45,3 +46,6 @@ jobs:
 
       - name: Run bounded repair state fixtures
         run: python3 .github/scripts/worker-repair/test_repair.py -v
+
+      - name: Run bounded Return-to-Worker lifecycle fixture
+        run: python3 .github/scripts/worker-repair/lifecycle_fixture.py
