@@ -9,6 +9,7 @@ This repository contains organization-wide engineering policy, reusable SOPs, Gi
 ## Engineering
 
 - [Environment Model](docs/engineering/environment-model.md) — `feat/* → dev → test → prod`
+- [External Worker Lifecycle](docs/engineering/external-worker-lifecycle.md) — current Worker/Candidate/Verify/Delivery/Recovery/Reporter lifecycle and role-boundary entry
 - [Mira Cloud Core Specification](docs/engineering/mira-cloud.md) — shared backend naming, service boundaries, client contracts, and unified authentication semantics
 - [Mira Cloud MCP Inter-service Collaboration](docs/engineering/mira-cloud-mcp.md) — lightweight optional MCP collaboration, service identity, delegated authorization, tool contracts, and validation (proposal)
 - [号脉 (How Am I) / Reporter / Worker Workforce V1 Contract](docs/engineering/how-am-i-reporter-workforce-v1.md) — worker-only, zero-new-cost observability and GitHub-owned workforce control

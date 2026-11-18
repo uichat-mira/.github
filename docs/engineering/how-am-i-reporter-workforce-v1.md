@@ -1,9 +1,11 @@
 # 号脉（How Am I）× Reporter × Worker Workforce — V1 技术合同
 
-Status: **Trusted Stage Reporter implemented and negative-path live E2E observed; successful Candidate→Verify→Delivery E2E and Live Heartbeat not yet accepted**  
+Status: **Trusted Stage Reporter implemented and negative-path real E2E observed; successful Candidate→Verify→Delivery E2E and Live Heartbeat not yet accepted**  
 Review date: 2026-11-17  
 Protocol owner: uichat-mira/.github  
-Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Control Room
+Target: Mira External Worker / paid Worker callers / Worker Workforce / Control Room
+
+**Ownership boundary:** current External Worker lifecycle/role semantics are owned by [`external-worker-lifecycle.md`](external-worker-lifecycle.md). This document owns 号脉, Reporter, Workforce and Control Room integration contracts only; it must not redefine Candidate/Verify/Delivery/Recovery semantics.
 
 > **维护者已确定的方向**：产品名「号脉」，英文名「How Am I」，技术代号 `how-am-i`。V1 **只接 Mira 的赛博施工队**，这是首家上报方而非永久唯一上报方；后续可支持为线上临时 Debug 授权的短期上报方，但**不属于 V1**。本期不做组织级通用应用日志，**不增加 Cloudflare 费用**。本合同不是施工授权，也不代表代码、Cloudflare 部署或真运行验收已完成。
 
@@ -202,7 +204,7 @@ Worker Workforce 是调度与可观察控制面，底层执行仍由 GitHub Acti
 | Dispatch | 只针对有授权的开放 Issue；V1 可以做资格检查、维护者显式 dispatch，不自动跨仓库批量派工 |
 | Recovery | 使用 AGT-059 的 `fresh/recoverable/contract_drift/recovery_failed/delivery_retry_only/delivery_complete` 和原 Candidate Artifact，不能重建恢复数据库 |
 | Capacity / cost | 排队数、真实 Run 时长、可用的 model usage；没有 usage/成本数据就标 unknown，不推定精确花费 |
-| Escalation | 同卡两轮返工仍失败，第三轮起交由维护者亲自接手，而不是无限自动重派 |
+| Escalation | **Planned under AGT-068:** 同卡两轮返工仍失败，第三轮起交由维护者亲自接手；当前 shared Worker 尚未实现自动 Return-to-Worker / 自动 escalation |
 
 Foreman/Workforce 派工前必须核对 Issue 合同与授权、caller 是否在实际默认分支注册、当前活跃 Run、能力/模型 route 是否允许、密钥是否可用（只读可用性、不暴露值）、历史 Candidate/Verify 状态、返工升级和预算。任何 `recovery_failed`、冲突或未核实的权限必须 fail closed。
 
@@ -244,7 +246,8 @@ T1/T2 合同测试：HMAC 原文绑定、错误密钥、重复事件、过期时
 
 - Organization current instructions: https://github.com/uichat-mira/.github/blob/main/AGENTS.md
 - Source-of-truth: https://github.com/uichat-mira/.github/blob/main/docs/governance/source-of-truth.md
-- Worker v2 design draft: https://github.com/uichat-mira/.github/pull/69
+- External Worker lifecycle (current): https://github.com/uichat-mira/.github/blob/main/docs/engineering/external-worker-lifecycle.md
+- Worker v2 historical design background (superseded as current runtime description): https://github.com/uichat-mira/.github/pull/69
 - AGT-056: https://github.com/uichat-mira/.github/issues/70
 - AGT-057: https://github.com/uichat-mira/.github/issues/71
 - AGT-058: https://github.com/uichat-mira/.github/issues/72
