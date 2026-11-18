@@ -92,7 +92,9 @@ jobs:
           assert "Load trusted shared Worker runtime" in worker
           assert "trusted-worker-runtime.sh" in worker
           assert 'bash "${RUNNER_TEMP}/mira-worker/trusted-worker-runtime.sh"' in worker
-          assert "--repair-round 0" in worker
+          assert 'worker_repair_round="$source_repair_round"' in worker
+          assert 'worker_repair_round="$(jq -r '.next_repair_round // ""'' in worker
+          assert '--repair-round "$REPAIR_ROUND"' in worker
           assert "Capture durable Candidate" in worker
           assert "Commit/push or reuse exact verified Candidate branch" not in worker
           assert "opencode run" not in worker
@@ -109,15 +111,17 @@ jobs:
           assert "Restore exact Candidate in clean Runner" in verify
           assert "Run trusted Validation ladder" in verify
           assert "validation-report.json" in verify
-          assert '"repair_round": 0' in verify
+          assert '"repair_round": int(os.getenv("REPAIR_ROUND") or "0")' in verify
+          assert "needs.worker_capture.outputs.candidate_repair_round" in verify
           assert "Require trustworthy Validation evidence" in verify
           assert "Require verified Candidate" not in verify
 
-          assert "completed-rounds 0" in decision
+          assert '--completed-rounds "$COMPLETED_REPAIR_ROUNDS"' in decision
+          assert "needs.worker_capture.outputs.candidate_repair_round" in decision
           assert "state == 'RETURNED'" in repair1
-          assert "repair_round: 1" in repair1
+          assert "repair_round: $" + "{{ fromJSON(needs.initial_repair_outcome.outputs.next_repair_round) }}" in repair1
           assert "state == 'RETURNED'" in repair2
-          assert "repair_round: 2" in repair2
+          assert "repair_round: $" + "{{ fromJSON(needs.repair_round_1.outputs.next_repair_round) }}" in repair2
           assert "repair_round_3:" not in workflow
           assert workflow.count("uses: ./.github/workflows/mira-external-worker-repair.yml") == 2
 
@@ -162,6 +166,10 @@ jobs:
           assert "VERIFIED|BLOCKED|ESCALATED|DELIVERED" in lifecycle
           assert "candidate_artifact_id" in lifecycle
           assert "repair_round" in lifecycle
+          assert "R1_REPAIR_ROUND" in lifecycle
+          assert "R2_REPAIR_ROUND" in lifecycle
+          assert 'repair_round="$R1_REPAIR_ROUND"' in lifecycle
+          assert 'repair_round="$R2_REPAIR_ROUND"' in lifecycle
 
           assert "lifecycle_handoff" in delivery
           assert "outputs.state == 'VERIFIED'" in delivery
