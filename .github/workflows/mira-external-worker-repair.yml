@@ -158,6 +158,7 @@ jobs:
           root="${RUNNER_TEMP}/mira-worker"
           cp "$root/handoff/issue.json" "$root/issue.json"
           cp "$root/handoff/maintainer-comments.json" "$root/maintainer-comments.json"
+          cp "$root/handoff/contract.json" "$root/contract.json"
           cp "$root/handoff/provider-route.json" "$root/provider-route.json"
           test -s "$root/source-verify/validation-report.json"
 
@@ -207,7 +208,7 @@ jobs:
           root="${RUNNER_TEMP}/mira-worker"
           python3 "$root/trusted-repair.py" context \
             --issue-json "$root/issue.json" \
-            --amendments-json "$root/maintainer-comments.json" \
+            --contract-json "$root/contract.json" \
             --candidate-manifest "$root/source-candidate/candidate.json" \
             --validation-report "$root/source-verify/validation-report.json" \
             --validation-artifact-name "$VALIDATION_ARTIFACT_NAME" \
@@ -377,6 +378,7 @@ jobs:
           path: |
             ${{ runner.temp }}/mira-worker/issue.json
             ${{ runner.temp }}/mira-worker/maintainer-comments.json
+            ${{ runner.temp }}/mira-worker/contract.json
             ${{ runner.temp }}/mira-worker/provider-route.json
             ${{ runner.temp }}/mira-worker/repair-context.json
             ${{ runner.temp }}/mira-worker/source-restore.json
