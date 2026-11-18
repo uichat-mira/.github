@@ -51,7 +51,7 @@ class ValidationTests(unittest.TestCase):
     def test_l0_ceiling_runs_identity_only_and_reports_gap(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            marker = root / "ran"
+            marker = root / ".git" / "ran"
             profile = write_profile(root, {
                 "feature": {"checks": [
                     {"id": "unit", "tier": "L2", "requirement": "required", "command": f"touch {marker}"}
@@ -79,7 +79,7 @@ class ValidationTests(unittest.TestCase):
     def test_profile_pass_respects_max_tier_without_running_l4(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            marker = root / "l4-ran"
+            marker = root / ".git" / "l4-ran"
             profile = write_profile(root, {
                 "feature": {"checks": [
                     {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"},
@@ -142,6 +142,19 @@ class ValidationTests(unittest.TestCase):
             _, report = run_validation(root, profile)
             self.assertEqual(report["result"], "VALIDATION_GAP")
             self.assertEqual(report["gaps"][0]["kind"], "capability_unavailable")
+
+    def test_profile_command_cannot_mutate_candidate_and_still_pass(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "mutator", "tier": "L2", "requirement": "required", "command": "printf changed > generated.txt"}
+                ]}
+            })
+            _, report = run_validation(root, profile)
+            self.assertEqual(report["result"], "BLOCKED")
+            check = next(x for x in report["checks"] if x["id"] == "mutator")
+            self.assertEqual(check["status"], "mutated_candidate")
 
     def test_explicit_l4_runs_only_when_ceiling_allows_it(self):
         with tempfile.TemporaryDirectory() as td:
