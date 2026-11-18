@@ -86,6 +86,7 @@ permissions:
 
 jobs:
   repair_worker:
+    continue-on-error: true
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -99,6 +100,7 @@ jobs:
       candidate_patch_sha256: ${{ steps.candidate.outputs.patch_sha256 }}
       candidate_tree_oid: ${{ steps.candidate.outputs.tree_oid }}
       worker_handoff_artifact_name: ${{ steps.names.outputs.worker_handoff_artifact_name }}
+      terminal_status: ${{ steps.worker_meta.outputs.terminal_status }}
 
     steps:
       - name: Validate bounded repair round
@@ -387,13 +389,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Require usable repair Candidate
+      - name: Finalize repair Worker stage outcome
+        id: worker_meta
         if: always()
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           CONTEXT_OUTCOME: ${{ steps.repair_context.outcome }}
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          ROUTE_OUTCOME: ${{ steps.route.outcome }}
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           VERSION_OUTCOME: ${{ steps.version.outcome }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
@@ -401,13 +405,18 @@ jobs:
           UPLOAD_OUTCOME: ${{ steps.candidate_upload.outcome }}
         run: |
           set -euo pipefail
-          for value in "$RESTORE_OUTCOME" "$CONTEXT_OUTCOME" "$POLICY_OUTCOME" "$INSTALL_OUTCOME" "$VERSION_OUTCOME" "$WORKER_OUTCOME" "$CANDIDATE_OUTCOME" "$UPLOAD_OUTCOME"; do
-            test "$value" = "success"
+          terminal_status="success"
+          for value in "$RESTORE_OUTCOME" "$CONTEXT_OUTCOME" "$POLICY_OUTCOME" "$ROUTE_OUTCOME" "$INSTALL_OUTCOME" "$VERSION_OUTCOME" "$WORKER_OUTCOME" "$CANDIDATE_OUTCOME" "$UPLOAD_OUTCOME"; do
+            if test "$value" != "success"; then
+              terminal_status="failure"
+            fi
           done
+          echo "terminal_status=$terminal_status" >> "$GITHUB_OUTPUT"
 
   verify:
     needs: repair_worker
-    if: ${{ needs.repair_worker.result == 'success' }}
+    if: ${{ needs.repair_worker.outputs.terminal_status == 'success' }}
+    continue-on-error: true
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -418,6 +427,7 @@ jobs:
       verification_artifact_name: ${{ steps.meta.outputs.artifact_name }}
       terminal_status: ${{ steps.meta.outputs.terminal_status }}
       validation_result: ${{ steps.meta.outputs.validation_result }}
+      evidence_status: ${{ steps.meta.outputs.evidence_status }}
 
     steps:
       - name: Checkout exact Candidate base
@@ -534,10 +544,15 @@ jobs:
           if test "$RESTORE_OUTCOME" = "success" && test "$VALIDATION_OUTCOME" = "success" && test "$validation_result" = "PASS"; then
             terminal_status="success"
           fi
+          evidence_status="failure"
+          if test "$RESTORE_OUTCOME" = "success" && test "$VALIDATION_OUTCOME" = "success"; then
+            evidence_status="success"
+          fi
           {
             echo "artifact_name=$artifact_name"
             echo "validation_result=$validation_result"
             echo "terminal_status=$terminal_status"
+            echo "evidence_status=$evidence_status"
           } >> "$GITHUB_OUTPUT"
 
           jq -n \
@@ -624,18 +639,18 @@ jobs:
         id: decision
         shell: bash
         env:
-          WORKER_JOB_RESULT: ${{ needs.repair_worker.result }}
-          VERIFY_JOB_RESULT: ${{ needs.verify.result }}
+          WORKER_STATUS: ${{ needs.repair_worker.outputs.terminal_status }}
+          VERIFY_EVIDENCE_STATUS: ${{ needs.verify.outputs.evidence_status }}
           VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
           REPAIR_ROUND: ${{ inputs.repair_round }}
         run: |
           set -euo pipefail
           precondition="ok"
           validation_result="${VALIDATION_RESULT:-BLOCKED}"
-          if test "$WORKER_JOB_RESULT" != "success"; then
+          if test "${WORKER_STATUS:-failure}" != "success"; then
             precondition="worker_failure"
             validation_result="BLOCKED"
-          elif test "$VERIFY_JOB_RESULT" != "success"; then
+          elif test "${VERIFY_EVIDENCE_STATUS:-failure}" != "success"; then
             precondition="verify_infrastructure"
             validation_result="BLOCKED"
           fi
