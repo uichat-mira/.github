@@ -1801,6 +1801,7 @@ jobs:
       contract_fingerprint: ${{ steps.restore.outputs.contract_fingerprint }}
       verification_artifact_name: ${{ steps.verify_meta.outputs.artifact_name }}
       terminal_status: ${{ steps.verify_meta.outputs.terminal_status }}
+      validation_result: ${{ steps.verify_meta.outputs.validation_result }}
 
     steps:
       - name: Checkout exact Candidate base
@@ -1837,6 +1838,26 @@ jobs:
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
             -o "$root/trusted-candidate.py"
           test -s "$root/trusted-candidate.py"
+
+      - name: Load trusted Validation primitive and base-owned profile
+        id: validation_tool
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-verify"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/a0bf0c72153a6ae638228a86537b4e02963e8e2e/.github/scripts/worker-validation/validation.py" \
+            -o "$root/trusted-validation.py"
+          test -s "$root/trusted-validation.py"
+
+          profile_file="$root/validation-profiles.json"
+          rm -f "$profile_file"
+          if test -n "$VALIDATION_PROFILE" && git cat-file -e "${BASE_SHA}:.github/mira-validation-profiles.json" 2>/dev/null; then
+            git show "${BASE_SHA}:.github/mira-validation-profiles.json" > "$profile_file"
+          fi
 
       - name: Restore exact Candidate in clean Runner
         id: restore
@@ -1878,48 +1899,46 @@ jobs:
             echo "contract_fingerprint=$contract_fingerprint"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check restored Candidate diff
-        id: diff_check
-        if: ${{ steps.restore.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --check
-
-      - name: Run trusted repository verification
-        id: verify_command
-        if: ${{ steps.restore.outcome == 'success' && steps.diff_check.outcome == 'success' }}
-        continue-on-error: true
+      - name: Run trusted Validation ladder
+        id: validation
+        if: ${{ always() && steps.validation_tool.outcome == 'success' }}
         shell: bash
         env:
-          MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
+          LEGACY_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-verify"
-          test -n "${MIRA_VERIFICATION_COMMAND}"
+          profile_file="$root/validation-profiles.json"
 
-          set +e
-          {
-            echo "$ ${MIRA_VERIFICATION_COMMAND}"
-            bash -lc "${MIRA_VERIFICATION_COMMAND}"
-          } 2>&1 | tee "$root/verification.raw"
-          verification_rc="${PIPESTATUS[0]}"
-          set -e
+          python3 "$root/trusted-validation.py" run \
+            --repo "$GITHUB_WORKSPACE" \
+            --profile-file "$profile_file" \
+            --profile "$VALIDATION_PROFILE" \
+            --max-tier "$VALIDATION_MAX_TIER" \
+            --legacy-command "$LEGACY_VERIFICATION_COMMAND" \
+            --restore-outcome "$RESTORE_OUTCOME" \
+            --output "$root/validation-report.json" \
+            --log "$root/validation.log"
 
+          cp "$root/validation.log" "$root/verification.log"
           python3 - <<'PY'
-          from pathlib import Path
           import json, os
+          from pathlib import Path
           root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
-          src = root / "verification.raw"
-          dst = root / "verification.log"
-          limit = 120_000
-          data = src.read_bytes() if src.exists() else b""
-          truncated = len(data) > limit
-          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
-          (root / "verification-meta.json").write_text(json.dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n")
+          report = json.loads((root / "validation-report.json").read_text())
+          (root / "verification-meta.json").write_text(json.dumps({
+              "schema_version": 1,
+              "mode": report.get("mode"),
+              "profile": report.get("profile"),
+              "max_tier": report.get("max_tier"),
+              "validation_result": report.get("result"),
+              "bytes": (root / "verification.log").stat().st_size if (root / "verification.log").exists() else 0,
+              "limit_bytes": report.get("log", {}).get("max_bytes", 120000),
+          }, indent=2, sort_keys=True) + "\n")
           PY
-
-          exit "$verification_rc"
 
       - name: Finalize Verify evidence
         id: verify_meta
@@ -1931,8 +1950,9 @@ jobs:
           EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
-          DIFF_CHECK_OUTCOME: ${{ steps.diff_check.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify_command.outcome }}
+          VALIDATION_STEP_OUTCOME: ${{ steps.validation.outcome }}
+          REQUESTED_PROFILE: ${{ inputs.validation_profile }}
+          REQUESTED_MAX_TIER: ${{ inputs.validation_max_tier }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-verify"
@@ -1944,10 +1964,48 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          ok = os.getenv("RESTORE_OUTCOME") == "success" and os.getenv("DIFF_CHECK_OUTCOME") == "success" and os.getenv("VERIFY_OUTCOME") == "success"
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
+          report_path = root / "validation-report.json"
+          if report_path.exists():
+              try:
+                  report = json.loads(report_path.read_text())
+              except Exception:
+                  report = None
+          else:
+              report = None
+
+          if not isinstance(report, dict):
+              report = {
+                  "schema_version": 1,
+                  "mode": "profile" if os.getenv("REQUESTED_PROFILE") else "legacy",
+                  "profile": os.getenv("REQUESTED_PROFILE") or None,
+                  "max_tier": os.getenv("REQUESTED_MAX_TIER") if os.getenv("REQUESTED_PROFILE") else None,
+                  "profile_state": "unavailable",
+                  "profile_sha256": None,
+                  "result": "BLOCKED",
+                  "failed_check": "validation_runtime",
+                  "checks": [],
+                  "gaps": [{
+                      "kind": "validation_runtime_unavailable",
+                      "required": True,
+                      "message": "trusted Validation step did not produce a readable report",
+                  }],
+              }
+              report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+          validation_result = report.get("result") or "BLOCKED"
+          ok = os.getenv("RESTORE_OUTCOME") == "success" and validation_result == "PASS"
           print("terminal_status=" + ("success" if ok else "failure"), file=open(os.environ["GITHUB_OUTPUT"], "a"))
+          print("validation_result=" + validation_result, file=open(os.environ["GITHUB_OUTPUT"], "a"))
+
+          diff_check = next((x for x in report.get("checks", []) if x.get("id") == "candidate_diff"), None)
+          diff_status = "skipped"
+          if isinstance(diff_check, dict):
+              diff_status = "success" if diff_check.get("status") == "passed" else "failure"
+
           payload = {
-              "schema_version": 1,
+              "schema_version": 2,
               "job_role": "verify",
               "repository": os.getenv("GITHUB_REPOSITORY"),
               "run_id": os.getenv("GITHUB_RUN_ID"),
@@ -1956,10 +2014,20 @@ jobs:
               "candidate_patch_sha256": os.getenv("EXPECTED_PATCH_SHA256"),
               "candidate_tree_oid": os.getenv("EXPECTED_TREE_OID"),
               "contract_fingerprint": os.getenv("EXPECTED_CONTRACT_FINGERPRINT"),
+              "validation_result": validation_result,
+              "validation": {
+                  "mode": report.get("mode"),
+                  "profile": report.get("profile"),
+                  "max_tier": report.get("max_tier"),
+                  "profile_state": report.get("profile_state"),
+                  "profile_sha256": report.get("profile_sha256"),
+                  "failed_check": report.get("failed_check"),
+                  "gaps": report.get("gaps", []),
+              },
               "stages": {
                   "restore": os.getenv("RESTORE_OUTCOME"),
-                  "diff_check": os.getenv("DIFF_CHECK_OUTCOME"),
-                  "trusted_verification": os.getenv("VERIFY_OUTCOME"),
+                  "diff_check": diff_status,
+                  "trusted_verification": "success" if validation_result == "PASS" else "failure",
               },
               "terminal_status": "success" if ok else "failure",
               "verification_artifact": os.getenv("ARTIFACT_NAME"),
@@ -1967,7 +2035,6 @@ jobs:
               "provider_credentials_present": False,
               "github_mutation_authority": False,
           }
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
           (root / "verify-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
           PY
 
@@ -1979,6 +2046,8 @@ jobs:
           path: |
             ${{ runner.temp }}/mira-verify/verify-run.json
             ${{ runner.temp }}/mira-verify/restore-result.json
+            ${{ runner.temp }}/mira-verify/validation-report.json
+            ${{ runner.temp }}/mira-verify/validation.log
             ${{ runner.temp }}/mira-verify/verification.log
             ${{ runner.temp }}/mira-verify/verification-meta.json
           if-no-files-found: warn
@@ -1989,13 +2058,11 @@ jobs:
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
-          DIFF_CHECK_OUTCOME: ${{ steps.diff_check.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify_command.outcome }}
+          VALIDATION_RESULT: ${{ steps.verify_meta.outputs.validation_result }}
         run: |
           set -euo pipefail
           test "$RESTORE_OUTCOME" = "success"
-          test "$DIFF_CHECK_OUTCOME" = "success"
-          test "$VERIFY_OUTCOME" = "success"
+          test "$VALIDATION_RESULT" = "PASS"
 
   delivery:
     needs:
