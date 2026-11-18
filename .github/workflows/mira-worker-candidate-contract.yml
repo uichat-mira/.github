@@ -92,6 +92,9 @@ jobs:
           assert "Load trusted shared Worker runtime" in worker
           assert "trusted-worker-runtime.sh" in worker
           assert 'bash "${RUNNER_TEMP}/mira-worker/trusted-worker-runtime.sh"' in worker
+          assert "trusted-repair.py" in worker
+          assert "structured_repair_context_build_failed" in worker
+          assert '--repair-round "$worker_repair_round"' in worker or '--repair-round "$REPAIR_ROUND"' in worker
           assert 'worker_repair_round="$source_repair_round"' in worker
           assert 'worker_repair_round="$(jq -r '.next_repair_round // ""'' in worker
           assert '--repair-round "$REPAIR_ROUND"' in worker
@@ -109,6 +112,7 @@ jobs:
           assert "secrets." not in verify
           assert "Checkout exact Candidate base" in verify
           assert "Restore exact Candidate in clean Runner" in verify
+          assert "--expected-repair-round \"$EXPECTED_REPAIR_ROUND\"" in verify
           assert "Run trusted Validation ladder" in verify
           assert "validation-report.json" in verify
           assert '"repair_round": int(os.getenv("REPAIR_ROUND") or "0")' in verify
