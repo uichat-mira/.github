@@ -371,6 +371,7 @@ jobs:
           retention-days: 14
 
       - name: Upload repair Worker handoff
+        id: worker_handoff_upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -405,10 +406,11 @@ jobs:
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
           UPLOAD_OUTCOME: ${{ steps.candidate_upload.outcome }}
+          WORKER_HANDOFF_UPLOAD_OUTCOME: ${{ steps.worker_handoff_upload.outcome }}
         run: |
           set -euo pipefail
           terminal_status="success"
-          for value in "$RESTORE_OUTCOME" "$CONTEXT_OUTCOME" "$POLICY_OUTCOME" "$ROUTE_OUTCOME" "$INSTALL_OUTCOME" "$VERSION_OUTCOME" "$WORKER_OUTCOME" "$CANDIDATE_OUTCOME" "$UPLOAD_OUTCOME"; do
+          for value in "$RESTORE_OUTCOME" "$CONTEXT_OUTCOME" "$POLICY_OUTCOME" "$ROUTE_OUTCOME" "$INSTALL_OUTCOME" "$VERSION_OUTCOME" "$WORKER_OUTCOME" "$CANDIDATE_OUTCOME" "$UPLOAD_OUTCOME" "$WORKER_HANDOFF_UPLOAD_OUTCOME"; do
             if test "$value" != "success"; then
               terminal_status="failure"
             fi
@@ -429,7 +431,7 @@ jobs:
       verification_artifact_name: ${{ steps.meta.outputs.artifact_name }}
       terminal_status: ${{ steps.meta.outputs.terminal_status }}
       validation_result: ${{ steps.meta.outputs.validation_result }}
-      evidence_status: ${{ steps.meta.outputs.evidence_status }}
+      evidence_status: ${{ steps.require_evidence.outputs.evidence_status }}
 
     steps:
       - name: Checkout exact Candidate base
@@ -546,15 +548,10 @@ jobs:
           if test "$RESTORE_OUTCOME" = "success" && test "$VALIDATION_OUTCOME" = "success" && test "$validation_result" = "PASS"; then
             terminal_status="success"
           fi
-          evidence_status="failure"
-          if test "$RESTORE_OUTCOME" = "success" && test "$VALIDATION_OUTCOME" = "success"; then
-            evidence_status="success"
-          fi
           {
             echo "artifact_name=$artifact_name"
             echo "validation_result=$validation_result"
             echo "terminal_status=$terminal_status"
-            echo "evidence_status=$evidence_status"
           } >> "$GITHUB_OUTPUT"
 
           jq -n \
@@ -587,6 +584,7 @@ jobs:
             }' > "$root/verify-run.json"
 
       - name: Upload repair Verify evidence
+        id: verify_upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -601,20 +599,24 @@ jobs:
           retention-days: 14
 
       - name: Require trustworthy repair Verify evidence
+        id: require_evidence
         if: always()
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           VALIDATION_OUTCOME: ${{ steps.validation.outcome }}
+          VERIFY_UPLOAD_OUTCOME: ${{ steps.verify_upload.outcome }}
           VALIDATION_RESULT: ${{ steps.meta.outputs.validation_result }}
         run: |
           set -euo pipefail
           test "$RESTORE_OUTCOME" = "success"
           test "$VALIDATION_OUTCOME" = "success"
+          test "$VERIFY_UPLOAD_OUTCOME" = "success"
           case "$VALIDATION_RESULT" in
             PASS|REPAIR|BLOCKED|VALIDATION_GAP) ;;
             *) exit 1 ;;
           esac
+          echo "evidence_status=success" >> "$GITHUB_OUTPUT"
 
   outcome:
     needs:
