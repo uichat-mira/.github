@@ -10,11 +10,11 @@ import tempfile
 
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-CANDIDATE = ROOT / "worker-candidate" / "candidate.py"
-VALIDATION = ROOT / "worker-validation" / "validation.py"
+SCRIPTS = HERE.parent
+CANDIDATE = SCRIPTS / "worker-candidate" / "candidate.py"
+VALIDATION = SCRIPTS / "worker-validation" / "validation.py"
 REPAIR = HERE / "repair.py"
-DELIVERY = ROOT / "worker-candidate" / "delivery.py"
+DELIVERY = SCRIPTS / "worker-candidate" / "delivery.py"
 
 REPOSITORY = "uichat-mira/repair-fixture"
 ISSUE = 85
