@@ -12,9 +12,20 @@ on:
         required: true
         type: string
       verification_command:
-        description: Trusted repository-owned verification command
-        required: true
+        description: Legacy trusted repository-owned verification command; used only when validation_profile is empty
+        required: false
         type: string
+        default: ''
+      validation_profile:
+        description: Repository-owned Validation Profile name from .github/mira-validation-profiles.json
+        required: false
+        type: string
+        default: ''
+      validation_max_tier:
+        description: Hard ceiling for profile-mode validation (L0-L5); never upgrades itself
+        required: false
+        type: string
+        default: L3
       timeout_minutes:
         description: Advisory Worker planning budget (minutes); never used as a hard termination timeout
         required: false
@@ -229,6 +240,8 @@ jobs:
           CURRENT_BASE_SHA: ${{ steps.identity.outputs.base_sha }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
         run: |
           set -euo pipefail
 
@@ -237,19 +250,42 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/uichat-mira/.github/a0bf0c72153a6ae638228a86537b4e02963e8e2e/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/uichat-mira/.github/a0bf0c72153a6ae638228a86537b4e02963e8e2e/.github/scripts/worker-validation/validation.py" \
+            -o "${root}/trusted-validation.py"
           test -s "${root}/trusted-recovery.py"
           test -s "${root}/trusted-candidate.py"
+          test -s "${root}/trusted-validation.py"
+
+          profile_file="${root}/validation-profiles.json"
+          rm -f "$profile_file"
+          if test -n "$VALIDATION_PROFILE" && git cat-file -e "${CURRENT_BASE_SHA}:.github/mira-validation-profiles.json" 2>/dev/null; then
+            git show "${CURRENT_BASE_SHA}:.github/mira-validation-profiles.json" > "$profile_file"
+          fi
+
+          python3 "${root}/trusted-validation.py" contract \
+            --profile-file "$profile_file" \
+            --profile "$VALIDATION_PROFILE" \
+            --max-tier "$VALIDATION_MAX_TIER" \
+            --legacy-command "$VERIFICATION_COMMAND" \
+            --output "${root}/validation-contract.json"
+
+          validation_contract_sha256="$(jq -r '.contract_sha256' "${root}/validation-contract.json")"
+          test -n "$validation_contract_sha256"
 
           python3 "${root}/trusted-recovery.py" fingerprint \
             --issue-json "${root}/issue.json" \
             --comments-json "${root}/maintainer-comments.json" \
             --base-branch "$BASE_BRANCH" \
             --verification-command "$VERIFICATION_COMMAND" \
+            --validation-profile "$VALIDATION_PROFILE" \
+            --validation-max-tier "$VALIDATION_MAX_TIER" \
+            --validation-contract-sha256 "$validation_contract_sha256" \
             --output "${root}/contract.json"
 
           current_fingerprint="$(jq -r '.fingerprint' "${root}/contract.json")"
