@@ -1735,6 +1735,7 @@ jobs:
           EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
           EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          REPAIR_ROUND: ${{ needs.worker_capture.outputs.candidate_repair_round }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           VALIDATION_STEP_OUTCOME: ${{ steps.validation.outcome }}
           REQUESTED_PROFILE: ${{ inputs.validation_profile }}
@@ -1796,7 +1797,7 @@ jobs:
               "repository": os.getenv("GITHUB_REPOSITORY"),
               "run_id": os.getenv("GITHUB_RUN_ID"),
               "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
-              "repair_round": 0,
+              "repair_round": int(os.getenv("REPAIR_ROUND") or "0"),
               "base_sha": os.getenv("BASE_SHA"),
               "candidate_patch_sha256": os.getenv("EXPECTED_PATCH_SHA256"),
               "candidate_tree_oid": os.getenv("EXPECTED_TREE_OID"),
@@ -1882,11 +1883,12 @@ jobs:
         shell: bash
         env:
           VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
+          COMPLETED_REPAIR_ROUNDS: ${{ needs.worker_capture.outputs.candidate_repair_round }}
         run: |
           set -euo pipefail
           python3 "${RUNNER_TEMP}/trusted-repair.py" decide \
             --validation-result "$VALIDATION_RESULT" \
-            --completed-rounds 0 \
+            --completed-rounds "$COMPLETED_REPAIR_ROUNDS" \
             --output "${RUNNER_TEMP}/repair-outcome.json"
           echo "state=$(jq -r '.state' "${RUNNER_TEMP}/repair-outcome.json")" >> "$GITHUB_OUTPUT"
           echo "next_repair_round=$(jq -r '.next_repair_round // ""' "${RUNNER_TEMP}/repair-outcome.json")" >> "$GITHUB_OUTPUT"
@@ -1919,7 +1921,7 @@ jobs:
       validation_max_tier: ${{ inputs.validation_max_tier }}
       timeout_minutes: ${{ inputs.timeout_minutes }}
       free_mode: ${{ inputs.free_mode }}
-      repair_round: 1
+      repair_round: ${{ fromJSON(needs.initial_repair_outcome.outputs.next_repair_round) }}
     secrets:
       opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
       provider_api_key: ${{ secrets.provider_api_key }}
@@ -1943,7 +1945,7 @@ jobs:
       validation_max_tier: ${{ inputs.validation_max_tier }}
       timeout_minutes: ${{ inputs.timeout_minutes }}
       free_mode: ${{ inputs.free_mode }}
-      repair_round: 2
+      repair_round: ${{ fromJSON(needs.repair_round_1.outputs.next_repair_round) }}
     secrets:
       opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
       provider_api_key: ${{ secrets.provider_api_key }}
@@ -1988,6 +1990,7 @@ jobs:
           INITIAL_VERIFY_STATUS: ${{ needs.verify.outputs.terminal_status }}
           INITIAL_VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
           R1_STATE: ${{ needs.repair_round_1.outputs.state }}
+          R1_REPAIR_ROUND: ${{ needs.repair_round_1.outputs.repair_round }}
           R1_CANDIDATE: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
           R1_CANDIDATE_ID: ${{ needs.repair_round_1.outputs.candidate_artifact_id }}
           R1_CANDIDATE_DIGEST: ${{ needs.repair_round_1.outputs.candidate_artifact_digest }}
@@ -1998,6 +2001,7 @@ jobs:
           R1_VERIFY_STATUS: ${{ needs.repair_round_1.outputs.verification_terminal_status }}
           R1_VALIDATION_RESULT: ${{ needs.repair_round_1.outputs.validation_result }}
           R2_STATE: ${{ needs.repair_round_2.outputs.state }}
+          R2_REPAIR_ROUND: ${{ needs.repair_round_2.outputs.repair_round }}
           R2_CANDIDATE: ${{ needs.repair_round_2.outputs.candidate_artifact_name }}
           R2_CANDIDATE_ID: ${{ needs.repair_round_2.outputs.candidate_artifact_id }}
           R2_CANDIDATE_DIGEST: ${{ needs.repair_round_2.outputs.candidate_artifact_digest }}
@@ -2041,7 +2045,7 @@ jobs:
               state="$R1_STATE"
               validation_result="${R1_VALIDATION_RESULT:-$validation_result}"
               if test -n "$R1_CANDIDATE_ID"; then
-                repair_round=1
+                repair_round="$R1_REPAIR_ROUND"
                 candidate="$R1_CANDIDATE"
                 candidate_id="$R1_CANDIDATE_ID"
                 candidate_digest="$R1_CANDIDATE_DIGEST"
@@ -2057,7 +2061,7 @@ jobs:
               state="$R2_STATE"
               validation_result="${R2_VALIDATION_RESULT:-$validation_result}"
               if test -n "$R2_CANDIDATE_ID"; then
-                repair_round=2
+                repair_round="$R2_REPAIR_ROUND"
                 candidate="$R2_CANDIDATE"
                 candidate_id="$R2_CANDIDATE_ID"
                 candidate_digest="$R2_CANDIDATE_DIGEST"
