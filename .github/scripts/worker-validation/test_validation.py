@@ -218,6 +218,44 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(report["result"], "PASS")
             self.assertTrue(marker.exists())
 
+    def test_profile_description_does_not_change_contract_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile_path = write_profile(root, {
+                "feature": {
+                    "description": "first wording",
+                    "checks": [
+                        {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"}
+                    ],
+                }
+            })
+            args = Args()
+            args.profile_file = str(profile_path)
+            args.profile = "feature"
+            args.max_tier = "L3"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract-a.json")
+            MODULE.contract(args)
+            first = json.loads(Path(args.output).read_text())
+
+            profile_path.write_text(json.dumps({
+                "schema_version": 1,
+                "profiles": {
+                    "feature": {
+                        "description": "different human wording",
+                        "checks": [
+                            {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"}
+                        ],
+                    }
+                },
+            }))
+            args.output = str(root / ".git" / "contract-b.json")
+            MODULE.contract(args)
+            second = json.loads(Path(args.output).read_text())
+
+            self.assertEqual(first["profile_sha256"], second["profile_sha256"])
+            self.assertEqual(first["contract_sha256"], second["contract_sha256"])
+
     def test_invalid_profile_schema_becomes_gap(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
