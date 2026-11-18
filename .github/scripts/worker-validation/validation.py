@@ -141,6 +141,7 @@ def contract(args: argparse.Namespace) -> int:
     profile_name = args.profile or ""
     if not profile_name:
         legacy = args.legacy_command or ""
+        legacy_available = bool(legacy.strip())
         payload = {
             "schema_version": 1,
             "mode": "legacy",
@@ -151,17 +152,30 @@ def contract(args: argparse.Namespace) -> int:
             "legacy_command_sha256": (
                 "sha256:" + hashlib.sha256(legacy.encode("utf-8")).hexdigest() if legacy else None
             ),
-            "gaps": ([] if legacy.strip() else ["legacy verification_command is empty"]),
+            "result": "PASS" if legacy_available else "VALIDATION_GAP",
+            "gaps": ([] if legacy_available else ["legacy verification_command is empty"]),
         }
         payload["contract_sha256"] = sha256_json(payload)
         dump_json(payload, args.output)
         return 0
 
-    max_tier = validate_max_tier(args.max_tier)
-    if not PROFILE_RE.fullmatch(profile_name):
+    try:
+        max_tier = validate_max_tier(args.max_tier)
+        tier_error = None
+    except ValidationError as exc:
+        max_tier = args.max_tier
+        tier_error = str(exc)
+
+    if tier_error:
+        profile, state, errors = None, "invalid_dispatch_contract", [tier_error]
+        contract_result = "BLOCKED"
+    elif not PROFILE_RE.fullmatch(profile_name):
         profile, state, errors = None, "profile_invalid", ["invalid validation profile identifier"]
+        contract_result = "VALIDATION_GAP"
     else:
         profile, state, errors = selected_profile(args.profile_file, profile_name)
+        contract_result = "PASS" if profile is not None else "VALIDATION_GAP"
+
     payload = {
         "schema_version": 1,
         "mode": "profile",
@@ -170,6 +184,7 @@ def contract(args: argparse.Namespace) -> int:
         "profile_state": state,
         "profile_sha256": sha256_json(profile) if profile is not None else None,
         "legacy_command_sha256": None,
+        "result": contract_result,
         "gaps": errors,
     }
     payload["contract_sha256"] = sha256_json(payload)
