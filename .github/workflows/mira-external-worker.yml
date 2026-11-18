@@ -639,6 +639,21 @@ jobs:
             echo "source_run_id=$source_run_id"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Enforce Validation dispatch contract before model execution
+        id: validation_dispatch
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract="${RUNNER_TEMP}/mira-worker/validation-contract.json"
+          test -s "$contract"
+          result="$(jq -r '.result // "BLOCKED"' "$contract")"
+          if test "$result" != "PASS"; then
+            echo "::error::Validation dispatch contract is not runnable: $result." >&2
+            cat "$contract" >&2
+            exit 1
+          fi
+
       - name: Enforce Recovery fail-closed boundary
         id: recovery_gate
         if: ${{ steps.recovery.outputs.mode == 'recovery_failed' }}
@@ -1572,6 +1587,7 @@ jobs:
           RECOVERY_SOURCE_RUN_ID: ${{ steps.handoff.outputs.recovery_source_run_id }}
           RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
           RECOVERY_GATE_OUTCOME: ${{ steps.recovery_gate.outcome }}
+          VALIDATION_DISPATCH_OUTCOME: ${{ steps.validation_dispatch.outcome }}
           CANDIDATE_ARTIFACT_NAME: ${{ steps.handoff.outputs.candidate_artifact_name }}
           CANDIDATE_ARTIFACT_ID: ${{ steps.handoff.outputs.candidate_artifact_id }}
           CANDIDATE_ARTIFACT_DIGEST: ${{ steps.handoff.outputs.candidate_artifact_digest }}
@@ -1611,6 +1627,7 @@ jobs:
               ("identity", os.getenv("IDENTITY_OUTCOME")),
               ("recovery", os.getenv("RECOVERY_OUTCOME")),
               ("recovery_gate", os.getenv("RECOVERY_GATE_OUTCOME")),
+              ("validation_dispatch", os.getenv("VALIDATION_DISPATCH_OUTCOME")),
               ("provider", os.getenv("PROVIDER_OUTCOME")),
               ("policy", os.getenv("POLICY_OUTCOME")),
               ("install", os.getenv("INSTALL_OUTCOME")),
