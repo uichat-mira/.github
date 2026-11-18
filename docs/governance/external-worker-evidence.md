@@ -16,7 +16,7 @@ The `mira-external-worker-<run_id>` Artifact contains bounded Worker/Capture evi
 
 - `worker-run.json` — Worker/Capture run identity, provider/model route, stage outcomes (including Candidate/Verify evidence re-publication on Delivery-only retry), Recovery mode/source, Candidate pointer/recoverability and permission metadata;
 - `identity.txt`, `issue.json`, trusted-maintainer comment snapshot and `provider-route.json` — durable handoff inputs needed by later trusted stages;
-- `contract.json`, `recovery-state.json`, Recovery context and discovered pointer metadata when applicable;
+- `contract.json`, `validation-contract.json`, `recovery-state.json`, Recovery context and discovered pointer metadata when applicable;
 - metadata-only trajectory/session summary;
 - bounded Worker output;
 - `candidate-status.json` plus bounded Candidate capture stdout/stderr;
@@ -28,11 +28,14 @@ The recoverable `candidate.patch` and `candidate.json` remain in a **separate im
 
 The `mira-external-worker-verify-<run_id>-<attempt>` Artifact records:
 
-- `verify-run.json` — exact base, Candidate patch/tree identity, clean restore result, verification outcome and read-only permission contract;
-- bounded verification log and metadata;
-- Candidate restore result when available.
+- `verify-run.json` — exact base, Candidate patch/tree identity, clean restore result, structured Validation result and read-only permission contract;
+- `validation-report.json` — profile/legacy mode, tier ceiling, ordered checks, duration/status, explicit gaps and one of `PASS / REPAIR / BLOCKED / VALIDATION_GAP`;
+- bounded `validation.log`; `verification.log` remains a compatibility alias for Recovery handoff during migration;
+- Candidate restore result and bounded verification metadata when available.
 
-Verify evidence is tied to the exact Candidate identity. It does not contain provider credentials and has no GitHub mutation authority.
+Verify evidence is tied to the exact Candidate identity. Only `PASS` produces a successful Verify terminal status and can authorize ordinary Delivery. It does not contain provider credentials and has no GitHub mutation authority.
+
+The Validation Profile schema and result semantics are owned by [`../engineering/external-worker-validation.md`](../engineering/external-worker-validation.md); this evidence document only defines what is persisted.
 
 ### Delivery evidence
 
@@ -104,7 +107,7 @@ Pointer selection follows Candidate-origin run ID/attempt, so a delayed Delivery
 AGT-058 no longer compresses the entire pipeline into one terminal status. The Actions job graph and role-specific evidence distinguish:
 
 - **Worker/Capture failure** — no Verify or Delivery is authorized; a successfully uploaded Candidate may still be recoverable.
-- **Verify failure** — Candidate and Verify evidence remain; Delivery is skipped, so no branch push or Draft PR is created.
+- **Verify non-PASS** — Candidate and Verify/Validation evidence remain; `REPAIR`, `BLOCKED`, and `VALIDATION_GAP` all prevent Delivery while preserving their distinct structured result.
 - **Delivery failure** — Verify already passed for the same Candidate identity; the next run may enter `delivery_retry_only`, reusing trusted Verify evidence without provider/model execution. Branch and Draft PR delivery are idempotent: an exact existing Candidate branch/PR is reused, while mismatched existing state fails closed.
 - **Delivery-only retry** — Candidate and Verify evidence re-publication outcomes are recorded separately; Delivery is allowed only when both re-publications succeeded.
 - **Already delivered** — a later dispatch returns the previously verified branch/PR identity without creating a new branch, rerunning Verify, or creating another PR.
