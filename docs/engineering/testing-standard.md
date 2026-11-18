@@ -123,6 +123,8 @@ Docs      -> Node/Vitest-compatible package tests / build / preview smoke
 
 Do not migrate a healthy repository to another runner solely for Organization uniformity.
 
+For External Worker dispatch, repository-owned Validation Profiles map concrete commands onto these testing responsibilities. The profile/tier/ceiling/result contract is owned by [`external-worker-validation.md`](external-worker-validation.md); it must not redefine T1–T5 or infer expensive validation merely from available scripts.
+
 ## 4. Organization CI status contract
 
 Repositories should expose useful layer-specific CI jobs where practical, for example:
