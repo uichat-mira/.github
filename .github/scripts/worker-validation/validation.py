@@ -129,8 +129,9 @@ def selected_profile(profile_file: str | Path, profile_name: str) -> tuple[dict[
     for item in normalized_checks:
         item.pop("_order", None)
 
+    # Only executable semantics participate in the profile contract identity.
+    # Human description changes must not invalidate a recoverable Candidate.
     normalized = {
-        "description": profile.get("description") if isinstance(profile.get("description"), str) else None,
         "checks": normalized_checks,
     }
     return normalized, "available", []
@@ -317,7 +318,7 @@ def run_validation(args: argparse.Namespace) -> int:
         if mode == "profile" and TIER_INDEX["L1"] > TIER_INDEX[max_tier]:
             checks.append(_check_record(
                 cid="candidate_diff", tier="L1", requirement="required",
-                command="git diff --check", status="skipped",
+                command="git diff --check && git diff --cached --check", status="skipped",
                 reason=f"dispatch max tier is {max_tier}",
             ))
             gaps.append({
