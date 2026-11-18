@@ -80,6 +80,9 @@ jobs:
           assert "--validation-profile \"$VALIDATION_PROFILE\"" in worker
           assert "--validation-max-tier \"$VALIDATION_MAX_TIER\"" in worker
           assert "validation-contract.json" in worker
+          assert "Enforce Validation dispatch contract before model execution" in worker
+          assert worker.index("Enforce Validation dispatch contract before model execution") < worker.index("Resolve run-scoped Worker provider route")
+          assert "VALIDATION_DISPATCH_OUTCOME" in worker
           assert "candidate_artifact_identity_mismatch_or_expired" in worker
           assert "candidate_exact_restore_failed" in worker
           assert "Report already delivered Candidate" in worker
