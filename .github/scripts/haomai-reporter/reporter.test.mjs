@@ -44,6 +44,8 @@ function repairFixture({ escalated = false } = {}) {
     outputs: escalated
       ? {
           state: "RETURNED",
+          repair_round: "1",
+          next_repair_round: "2",
           candidate_artifact_id: String(repair1Id),
           candidate_artifact_name: "candidate-r1",
           verification_artifact_name: "verify-r1",
@@ -52,6 +54,7 @@ function repairFixture({ escalated = false } = {}) {
         }
       : {
           state: "VERIFIED",
+          repair_round: "1",
           candidate_artifact_id: String(repair1Id),
           candidate_artifact_name: "candidate-r1",
           verification_artifact_name: "verify-r1",
@@ -64,6 +67,7 @@ function repairFixture({ escalated = false } = {}) {
         result: "success",
         outputs: {
           state: "ESCALATED",
+          repair_round: "2",
           candidate_artifact_id: String(repair2Id),
           candidate_artifact_name: "candidate-r2",
           verification_artifact_name: "verify-r2",
@@ -177,6 +181,20 @@ test("repair-aware Reporter projects returned round and only final trusted PASS"
   const candidate = batch.events.find((e) => e.kind === "candidate.captured");
   assert.equal(candidate.evidence_ref.id, "14000000003");
   assert.equal(batch.events.at(-1).outcome, "success");
+});
+
+test("cross-run recovered REPAIR reports the actual remaining round", () => {
+  const f = repairFixture();
+  f.needs.initial_repair_outcome.outputs.next_repair_round = "2";
+  f.needs.repair_round_1.outputs.repair_round = "2";
+  f.needs.lifecycle_handoff.outputs.repair_round = "2";
+  const batch = createBatch(f);
+  const returned = batch.events.filter((e) =>
+    e.kind === "recovery.detected" && e.stage === "repair" && e.outcome === "returned"
+  );
+  assert.equal(returned.length, 1);
+  assert.equal(returned[0].error_code, "VALIDATION_REPAIR_ROUND_2");
+  assert.ok(!batch.events.some((e) => e.error_code === "VALIDATION_REPAIR_ROUND_1"));
 });
 
 test("two failed repair rounds project escalation and never fake verify PASS", () => {
