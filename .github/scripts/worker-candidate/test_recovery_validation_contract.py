@@ -195,6 +195,8 @@ class RecoveryValidationContractTests(unittest.TestCase):
         self.assertTrue(result["run_worker"])
         self.assertTrue(result["reuse_candidate"])
         self.assertEqual(result["reason"], "prior_validation_repair")
+        self.assertEqual(result["repair_round"], 0)
+        self.assertEqual(result["next_repair_round"], 1)
 
     def test_blocked_validation_does_not_redispatch_worker(self):
         result = recovery_decision("BLOCKED")
@@ -214,6 +216,13 @@ class RecoveryValidationContractTests(unittest.TestCase):
         self.assertTrue(result["run_worker"])
         self.assertEqual(result["reason"], "prior_verification_failed")
 
+
+    def test_cross_run_repair_from_round_one_consumes_round_two(self):
+        result = recovery_decision("REPAIR", repair_round=1)
+        self.assertEqual(result["mode"], "recoverable")
+        self.assertTrue(result["run_worker"])
+        self.assertEqual(result["repair_round"], 1)
+        self.assertEqual(result["next_repair_round"], 2)
 
     def test_second_repair_failure_escalates_across_runs(self):
         result = recovery_decision("REPAIR", repair_round=2)
