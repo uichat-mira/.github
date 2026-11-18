@@ -299,7 +299,7 @@ def validate_verify_evidence(
     *,
     repository: str,
     manifest: dict[str, Any],
-) -> str:
+) -> tuple[str, str | None]:
     require_equal("verify job role", verify.get("job_role"), "verify")
     require_equal("verify repository", verify.get("repository"), repository)
     require_equal("verify run id", as_int("verify run id", verify.get("run_id")), as_int("candidate run id", manifest.get("run_id")))
@@ -311,7 +311,17 @@ def validate_verify_evidence(
     status = verify.get("terminal_status")
     if status not in {"success", "failure"}:
         raise RecoveryError("verify terminal status is invalid")
-    return status
+
+    validation_result = verify.get("validation_result")
+    if validation_result is not None:
+        if validation_result not in {"PASS", "REPAIR", "BLOCKED", "VALIDATION_GAP"}:
+            raise RecoveryError("verify validation_result is invalid")
+        if status == "success" and validation_result != "PASS":
+            raise RecoveryError("successful Verify evidence must report Validation PASS")
+        if status == "failure" and validation_result == "PASS":
+            raise RecoveryError("failed Verify evidence cannot report Validation PASS")
+
+    return status, validation_result
 
 
 def validate_delivery_evidence(
@@ -416,12 +426,15 @@ def decide(args: argparse.Namespace) -> int:
         if verify_state in {"success", "failure"}:
             if not isinstance(verify, dict):
                 raise RecoveryError("trusted Verify evidence is missing")
-            verify_status = validate_verify_evidence(verify, repository=args.repository, manifest=manifest)
+            verify_status, validation_result = validate_verify_evidence(
+                verify, repository=args.repository, manifest=manifest
+            )
             require_equal("pointer Verify state", verify_status, verify_state)
         elif verify_state == "skipped":
             if verify is not None:
                 raise RecoveryError("Verify evidence exists while pointer state is skipped")
             verify_status = "skipped"
+            validation_result = None
         else:
             raise RecoveryError("pointer Verify state is invalid")
 
@@ -475,12 +488,33 @@ def decide(args: argparse.Namespace) -> int:
         return 0
 
     if verify_status == "failure":
-        result.update(
-            mode="recoverable",
-            run_worker=True,
-            reuse_candidate=True,
-            reason="prior_verification_failed",
-        )
+        if validation_result in {"BLOCKED", "VALIDATION_GAP"}:
+            result.update(
+                mode="recovery_failed",
+                run_worker=False,
+                reuse_candidate=False,
+                reason=(
+                    "prior_validation_blocked"
+                    if validation_result == "BLOCKED"
+                    else "prior_validation_gap_requires_contract_or_maintainer_change"
+                ),
+                validation_result=validation_result,
+            )
+        else:
+            # Legacy Verify evidence has no validation_result. Preserve its
+            # historical continuation behavior; structured REPAIR is the new
+            # explicit code-repair classification.
+            result.update(
+                mode="recoverable",
+                run_worker=True,
+                reuse_candidate=True,
+                reason=(
+                    "prior_validation_repair"
+                    if validation_result == "REPAIR"
+                    else "prior_verification_failed"
+                ),
+                validation_result=validation_result,
+            )
         dump_json(result, args.output)
         return 0
 
