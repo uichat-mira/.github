@@ -5,6 +5,8 @@ Review date: 2026-11-17
 Protocol owner: uichat-mira/.github  
 Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Control Room
 
+**Ownership boundary:** current External Worker lifecycle/role semantics are owned by [`external-worker-lifecycle.md`](external-worker-lifecycle.md). This document owns 号脉, Reporter, Workforce and Control Room integration contracts only; it must not redefine Candidate/Verify/Delivery/Recovery semantics.
+
 > **维护者已确定的方向**：产品名「号脉」，英文名「How Am I」，技术代号 `how-am-i`。V1 **只接 Mira 的赛博施工队**，这是首家上报方而非永久唯一上报方；后续可支持为线上临时 Debug 授权的短期上报方，但**不属于 V1**。本期不做组织级通用应用日志，**不增加 Cloudflare 费用**。本合同不是施工授权，也不代表代码、Cloudflare 部署或真运行验收已完成。
 
 ## 0. 决策记录与边界
@@ -244,7 +246,8 @@ T1/T2 合同测试：HMAC 原文绑定、错误密钥、重复事件、过期时
 
 - Organization current instructions: https://github.com/uichat-mira/.github/blob/main/AGENTS.md
 - Source-of-truth: https://github.com/uichat-mira/.github/blob/main/docs/governance/source-of-truth.md
-- Worker v2 design draft: https://github.com/uichat-mira/.github/pull/69
+- External Worker lifecycle (current): https://github.com/uichat-mira/.github/blob/main/docs/engineering/external-worker-lifecycle.md
+- Worker v2 historical design background (superseded as current runtime description): https://github.com/uichat-mira/.github/pull/69
 - AGT-056: https://github.com/uichat-mira/.github/issues/70
 - AGT-057: https://github.com/uichat-mira/.github/issues/71
 - AGT-058: https://github.com/uichat-mira/.github/issues/72
