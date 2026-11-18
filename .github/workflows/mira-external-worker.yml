@@ -2649,6 +2649,10 @@ jobs:
     needs:
       - worker_capture
       - verify
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+      - lifecycle_handoff
       - delivery
       - recovery_index
     if: ${{ always() && needs.worker_capture.result != 'skipped' }}
