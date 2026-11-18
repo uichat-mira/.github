@@ -1,6 +1,6 @@
 # 号脉（How Am I）× Reporter × Worker Workforce — V1 技术合同
 
-Status: **Product direction reviewed; technical proposal awaiting POC evidence**  
+Status: **Trusted Stage Reporter implemented and negative-path live E2E observed; successful Candidate→Verify→Delivery E2E and Live Heartbeat not yet accepted**  
 Review date: 2026-11-17  
 Protocol owner: uichat-mira/.github  
 Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Control Room
@@ -22,12 +22,20 @@ Target: Mira External Worker v2 / paid Worker callers / Worker Workforce / Contr
 
 ### 0.2 已核实的当前工程现实
 
-- uichat-mira/.github main 当前共享工作流中存在 worker_capture、verify、delivery、recovery_index 四个独立 Job，**未接入独立 Reporter Job**。
+- uichat-mira/.github main 当前共享工作流保留 worker_capture、verify、delivery、recovery_index 四个既有 Job，并从 PR #82 起增加**独立的 trusted_reporter Job**；具备隔离凭据和真实失败报道，尚未完成成功交付全链路 E2E；不等于 Live/heartbeat。
 - AGT-056～059 已提供可恢复 Candidate、干净 Runner 验证、独立交付、跨 Run 恢复。恢复索引是 Issue 中 `mira-recovery-candidate:v1` 机器注释，原始证据仍须从 Actions Artifact/manifest/verify evidence 校验。
 - AGT-059 的 caller 新权限要求 `actions: read`（历史 Artifact）与 `issues: write`（隔离 Recovery Index）。产品 caller 对历史 SHA 的 pin 尚需逐仓核查/升级，不能把 Org main 更新等于生产已经启用。
 - Cloud Auth 默认分支为 dev；Desktop/Mobile 默认为 prod。`issue_comment` 实际入口读取默认分支工作流，dev 分支的修改不自动令评论派工生效。
 - Control Room 现有系统是只读 GitHub/Cloudflare 投影，已有独立 Cloudflare Worker；V1 不把它改造成通用日志数据库或第二任务系统。
 - [Worker v2 历史设计 PR #69](https://github.com/uichat-mira/.github/pull/69) 是设计草案，而不是 Reporter/Foreman 已实现的证明。
+
+### 0.3 已实现的真实证据（2026-11-18；不改变本合同要求）
+
+- [组织共享 Reporter PR #82](https://github.com/uichat-mira/.github/pull/82) 已合并，可信 `trusted_reporter` 在独立 Runner 上运行；只读当前 Run 的 GitHub Jobs/Artifacts/PR，以既有 `haomai.telemetry.v1` 白名单生成 HMAC 事件；Reporter 故障不阻断原有交付。7/7 Reporter 测试及原有 Candidate/Verify/Delivery/Recovery 回归均通过。
+- 号脉 [PR #10](https://github.com/uichat-mira/how-am-i/pull/10) 已按 `dev → test → prod` 迁移并部署。Cloudflare 生产设置实查为 `observability.logs.enabled=true`、`invocation_logs=false`，避免平台自动请求日志采集自定义签名头；结构化日志仍可通过受控查询获取。
+- [真实独立 GitHub Reporter Run #44209088849](https://github.com/uichat-mira/how-am-i/actions/runs/44209088849)：通过 `issue_number=999999` 故意触发未经授权 Issue 的入口校验失败；OpenCode 未启动，Verify/Delivery/Recovery 跳过；Reporter Job 仍成功，Cloudflare 受控 Query API 按真实 Run ID 查回 **`worker.failed` 和 `run.finished: failure` 两条事件**。这是实际失败报道链路，而非合成 Runner 的输出。
+- [号脉 #11](https://github.com/uichat-mira/how-am-i/pull/11)、[Cloud Auth #155](https://github.com/uichat-mira/cloud-auth/pull/155)、[Mobile #325](https://github.com/uichat-mira/mira-mobile/pull/325)、[Desktop #480](https://github.com/uichat-mira/mira-desktop/pull/480) 均已将 `dev` 调用入口指向同一组织 Reporter 固定 SHA；四仓库的独立 Actions Secret 已配置，且无密钥进入源码或模型 Shell。各仓库 `test/prod` 的分支与默认分支派工行为不能据此推断为自动晋级。
+- **待验收**：真实成功施工中的 Candidate 捕获、可信 Verify、Draft PR 与 Reporter 对应事件；明确的默认分支生产入口晋级；账号级 Cloudflare 账单与留存期实证；Live Reporter/heartbeats/TV。不得用本次故意失败的 Run 冒称这些能力已通过。
 
 ## 1. Cloudflare Free：本项目的预算与限制
 
