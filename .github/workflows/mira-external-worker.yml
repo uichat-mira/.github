@@ -75,6 +75,7 @@ on:
         value: ${{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}
 
 permissions:
+  actions: read
   contents: read
   issues: read
   pull-requests: none
@@ -1887,11 +1888,6 @@ jobs:
       - verify
       - initial_repair_outcome
     if: ${{ always() && needs.initial_repair_outcome.outputs.state == 'RETURNED' }}
-    permissions:
-      actions: read
-      contents: read
-      issues: none
-      pull-requests: none
     uses: ./.github/workflows/mira-external-worker-repair.yml
     with:
       issue_number: ${{ inputs.issue_number }}
@@ -1916,11 +1912,6 @@ jobs:
       - worker_capture
       - repair_round_1
     if: ${{ always() && needs.repair_round_1.outputs.state == 'RETURNED' }}
-    permissions:
-      actions: read
-      contents: read
-      issues: none
-      pull-requests: none
     uses: ./.github/workflows/mira-external-worker-repair.yml
     with:
       issue_number: ${{ inputs.issue_number }}
