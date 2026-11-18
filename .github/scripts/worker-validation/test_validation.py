@@ -48,6 +48,27 @@ def run_validation(root: Path, profile_file: Path, *, profile="feature", max_tie
 
 
 class ValidationTests(unittest.TestCase):
+    def test_l1_detects_staged_candidate_whitespace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_repo(root)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Validation Test"], check=True)
+            tracked = root / "tracked.txt"
+            tracked.write_text("clean\n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            profile = root / "profiles.json"
+            profile.write_text(json.dumps({"schema_version": 1, "profiles": {"feature": {"checks": []}}}))
+            tracked.write_text("bad trailing whitespace   \n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+
+            _, report = run_validation(root, profile, max_tier="L1")
+            self.assertEqual(report["result"], "REPAIR")
+            diff = next(x for x in report["checks"] if x["id"] == "candidate_diff")
+            self.assertEqual(diff["status"], "failed")
+            self.assertNotEqual(diff["exit_code"], 0)
+
     def test_l0_ceiling_runs_identity_only_and_reports_gap(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
