@@ -1339,7 +1339,8 @@ jobs:
             exit 1
           fi
 
-          git diff --check
+          # Mechanical Candidate hygiene belongs to trusted Validation L1.
+          # Capture happens first so a repairable defect does not erase useful work.
 
       - name: Re-publish verified Candidate for Delivery-only retry
         id: recovered_candidate_upload
@@ -1361,6 +1362,8 @@ jobs:
           name: mira-external-worker-verify-recovered-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/mira-worker/recovery/verify/verify-run.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/validation-report.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/validation.log
             ${{ runner.temp }}/mira-worker/recovery/verify/verification.log
             ${{ runner.temp }}/mira-worker/recovery/verify/verification-meta.json
             ${{ runner.temp }}/mira-worker/recovery/verify/restore-result.json
