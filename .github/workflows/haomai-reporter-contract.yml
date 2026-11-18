@@ -1,0 +1,48 @@
+name: 号脉 Trusted Reporter Contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/mira-external-worker.yml'
+      - '.github/workflows/haomai-reporter-contract.yml'
+      - '.github/scripts/haomai-reporter/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reporter-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test evidence classification and HMAC contract
+        run: node --test .github/scripts/haomai-reporter/reporter.test.mjs
+      - name: Verify isolation and non-blocking topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('.github/workflows/mira-external-worker.yml').read_text()
+          worker=s[s.index('  worker_capture:'):s.index('\n  verify:')]
+          reporter=s[s.index('\n  trusted_reporter:'):]
+          assert 'haomai_reporter_hmac_secret' not in worker
+          assert 'HAOMAI_REPORTER_HMAC_SECRET' not in worker
+          assert 'trusted_reporter:' in reporter
+          assert "if: $" + "{" + "{ always()" in reporter
+          assert 'continue-on-error: true' in reporter
+          assert 'actions: read' in reporter
+          assert 'contents: read' in reporter
+          assert 'issues: none' in reporter
+          assert 'pull-requests: read' in reporter
+          assert 'contents: write' not in reporter
+          assert 'issues: write' not in reporter
+          assert 'opencode run' not in reporter
+          assert 'persist-credentials: false' in reporter
+          assert 'repository: uichat-mira/.github' in reporter
+          assert 'secrets.haomai_reporter_hmac_secret' in reporter
+          assert 'needs.worker_capture.result' in reporter
+          print('Trusted Reporter workflow boundary: PASS')
+          PY
