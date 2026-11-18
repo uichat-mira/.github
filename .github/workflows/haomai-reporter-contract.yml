@@ -31,7 +31,7 @@ jobs:
           assert 'haomai_reporter_hmac_secret' not in worker
           assert 'HAOMAI_REPORTER_HMAC_SECRET' not in worker
           assert 'trusted_reporter:' in reporter
-          assert "if: ${{ always()" in reporter
+          assert "if: $" + "{" + "{ always()" in reporter
           assert 'continue-on-error: true' in reporter
           assert 'actions: read' in reporter
           assert 'contents: read' in reporter
