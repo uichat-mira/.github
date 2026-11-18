@@ -1691,6 +1691,7 @@ jobs:
         env:
           EXPECTED_REPOSITORY: ${{ github.repository }}
           EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_REPAIR_ROUND: ${{ needs.worker_capture.outputs.candidate_repair_round }}
           EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
@@ -1705,6 +1706,7 @@ jobs:
             --candidate-dir "$candidate_dir" \
             --expected-repository "$EXPECTED_REPOSITORY" \
             --expected-issue-number "$EXPECTED_ISSUE_NUMBER" \
+            --expected-repair-round "$EXPECTED_REPAIR_ROUND" \
             --expected-base-sha "$EXPECTED_BASE_SHA" \
             --expected-contract-fingerprint "$EXPECTED_CONTRACT_FINGERPRINT" \
             | tee "$root/restore-result.json"
