@@ -250,13 +250,13 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/a0bf0c72153a6ae638228a86537b4e02963e8e2e/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/a0bf0c72153a6ae638228a86537b4e02963e8e2e/.github/scripts/worker-validation/validation.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
             -o "${root}/trusted-validation.py"
           test -s "${root}/trusted-recovery.py"
           test -s "${root}/trusted-candidate.py"
@@ -1863,7 +1863,7 @@ jobs:
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-verify"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/a0bf0c72153a6ae638228a86537b4e02963e8e2e/.github/scripts/worker-validation/validation.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
             -o "$root/trusted-validation.py"
           test -s "$root/trusted-validation.py"
 
