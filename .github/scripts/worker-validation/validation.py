@@ -329,10 +329,11 @@ def run_validation(args: argparse.Namespace) -> int:
             })
             overall = "VALIDATION_GAP"
         else:
-            rc, duration_ms, truncated = _run_command("git diff --check", repo, log_path, "L1 candidate_diff")
+            diff_command = "git diff --check && git diff --cached --check"
+            rc, duration_ms, truncated = _run_command(diff_command, repo, log_path, "L1 candidate_diff")
             checks.append(_check_record(
                 cid="candidate_diff", tier="L1", requirement="required",
-                command="git diff --check", status=("passed" if rc == 0 else "failed"),
+                command=diff_command, status=("passed" if rc == 0 else "failed"),
                 duration_ms=duration_ms, exit_code=rc,
                 reason=("validation log truncated" if truncated else None),
                 failure_result=("REPAIR" if rc != 0 else None),
