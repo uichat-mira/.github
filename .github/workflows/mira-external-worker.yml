@@ -2479,8 +2479,12 @@ jobs:
     needs:
       - worker_capture
       - verify
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+      - lifecycle_handoff
       - delivery
-    if: ${{ always() && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' && (needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' || (needs.worker_capture.outputs.recovered_candidate_upload_outcome == 'success' && needs.worker_capture.outputs.recovered_verify_upload_outcome == 'success')) }}
+    if: ${{ always() && needs.lifecycle_handoff.result == 'success' && needs.lifecycle_handoff.outputs.state != 'DELIVERED' && needs.lifecycle_handoff.outputs.candidate_artifact_name != '' && needs.lifecycle_handoff.outputs.candidate_artifact_id != '' && (needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' || (needs.worker_capture.outputs.recovered_candidate_upload_outcome == 'success' && needs.worker_capture.outputs.recovered_verify_upload_outcome == 'success')) }}
     permissions:
       contents: none
       issues: write
@@ -2496,16 +2500,19 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
           RECOVERY_SOURCE_RUN_ID: ${{ needs.worker_capture.outputs.recovery_source_run_id }}
+          LIFECYCLE_STATE: ${{ needs.lifecycle_handoff.outputs.state }}
+          REPAIR_ROUND: ${{ needs.lifecycle_handoff.outputs.repair_round }}
+          VALIDATION_RESULT: ${{ needs.lifecycle_handoff.outputs.validation_result }}
           BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           BASE_BRANCH: ${{ needs.worker_capture.outputs.candidate_base_branch }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
           CANDIDATE_ORIGIN_RUN_ID: ${{ needs.worker_capture.outputs.candidate_origin_run_id }}
           CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ needs.worker_capture.outputs.candidate_origin_run_attempt }}
-          CANDIDATE_ARTIFACT_NAME: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
-          CANDIDATE_ARTIFACT_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
-          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
-          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          CANDIDATE_ARTIFACT_NAME: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_digest }}
+          CANDIDATE_PATCH_SHA256: ${{ needs.lifecycle_handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ needs.lifecycle_handoff.outputs.candidate_tree_oid }}
           CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           AMBIGUITY_GUARD: ${{ needs.worker_capture.outputs.ambiguity_guard }}
           PROVIDER: ${{ needs.worker_capture.outputs.provider }}
@@ -2513,10 +2520,8 @@ jobs:
           PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           MODEL: ${{ needs.worker_capture.outputs.model }}
-          NORMAL_VERIFY_RESULT: ${{ needs.verify.outputs.terminal_status }}
-          NORMAL_VERIFY_JOB_RESULT: ${{ needs.verify.result }}
-          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
-          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          VERIFY_RESULT: ${{ needs.lifecycle_handoff.outputs.verification_terminal_status }}
+          VERIFY_ARTIFACT: ${{ needs.lifecycle_handoff.outputs.verification_artifact_name }}
           DELIVERY_RESULT: ${{ needs.delivery.outputs.terminal_status }}
           DELIVERY_JOB_RESULT: ${{ needs.delivery.result }}
           DELIVERY_ARTIFACT: ${{ needs.delivery.outputs.delivery_artifact_name }}
@@ -2524,19 +2529,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
-            verify_state="success"
-            verify_artifact="$RECOVERED_VERIFY_ARTIFACT"
-          else
-            if test "${NORMAL_VERIFY_RESULT:-}" = "success" || test "${NORMAL_VERIFY_RESULT:-}" = "failure"; then
-              verify_state="$NORMAL_VERIFY_RESULT"
-            elif test "$NORMAL_VERIFY_JOB_RESULT" = "skipped"; then
-              verify_state="skipped"
-            else
-              verify_state="failure"
-            fi
-            verify_artifact="${NORMAL_VERIFY_ARTIFACT:-}"
-          fi
+          case "${VERIFY_RESULT:-}" in
+            success|failure) verify_state="$VERIFY_RESULT" ;;
+            *) verify_state="skipped" ;;
+          esac
+          verify_artifact="${VERIFY_ARTIFACT:-}"
 
           if test "${DELIVERY_RESULT:-}" = "success" || test "${DELIVERY_RESULT:-}" = "failure"; then
             delivery_state="$DELIVERY_RESULT"
@@ -2546,6 +2543,15 @@ jobs:
             delivery_state="failure"
           fi
 
+          case "$REPAIR_ROUND" in
+            0|1|2) ;;
+            *) echo "::error::Invalid Recovery pointer repair round." >&2; exit 1 ;;
+          esac
+          case "$LIFECYCLE_STATE" in
+            VERIFIED|BLOCKED|ESCALATED) ;;
+            *) echo "::error::Invalid Recovery lifecycle state." >&2; exit 1 ;;
+          esac
+
           export POINTER_JSON
           POINTER_JSON="$(jq -cn \
             --arg repository "$GITHUB_REPOSITORY" \
@@ -2554,6 +2560,9 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg recovery_mode "$RECOVERY_MODE" \
             --arg recovery_source_run_id "$RECOVERY_SOURCE_RUN_ID" \
+            --arg lifecycle_state "$LIFECYCLE_STATE" \
+            --arg repair_round "$REPAIR_ROUND" \
+            --arg validation_result "$VALIDATION_RESULT" \
             --arg base_sha "$BASE_SHA" \
             --arg base_branch "$BASE_BRANCH" \
             --arg worker_branch "$WORKER_BRANCH" \
@@ -2584,11 +2593,14 @@ jobs:
               run_attempt: ($run_attempt | tonumber),
               recovery_mode: $recovery_mode,
               recovery_source_run_id: (if $recovery_source_run_id == "" then null else ($recovery_source_run_id | tonumber) end),
+              lifecycle_state: $lifecycle_state,
+              validation_result: (if $validation_result == "" then null else $validation_result end),
               base_sha: $base_sha,
               base_branch: $base_branch,
               worker_branch: $worker_branch,
               candidate_origin_run_id: ($candidate_origin_run_id | tonumber),
               candidate_origin_run_attempt: ($candidate_origin_run_attempt | tonumber),
+              candidate_origin_repair_round: ($repair_round | tonumber),
               candidate_artifact_name: $candidate_artifact_name,
               candidate_artifact_id: $candidate_artifact_id,
               candidate_artifact_digest: $candidate_artifact_digest,
@@ -2612,7 +2624,7 @@ jobs:
           <!-- mira-recovery-candidate:v1
           $POINTER_JSON
           -->
-          Mira Worker Recovery pointer · run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT · Candidate `$CANDIDATE_TREE_OID` · Verify $verify_state · Delivery $delivery_state.
+          Mira Worker Recovery pointer · run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT · Candidate `$CANDIDATE_TREE_OID` · repair round $REPAIR_ROUND · $LIFECYCLE_STATE · Verify $verify_state · Delivery $delivery_state.
           EOF
           )"
 
