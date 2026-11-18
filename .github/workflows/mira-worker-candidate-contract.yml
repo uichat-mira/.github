@@ -135,6 +135,8 @@ jobs:
           assert "Build bounded trusted repair context" in repair_worker
           assert "Run bounded repair Worker" in repair_worker
           assert "--repair-round \"$REPAIR_ROUND\"" in repair_worker
+          assert "id: worker_handoff_upload" in repair_worker
+          assert "WORKER_HANDOFF_UPLOAD_OUTCOME" in repair_worker
           assert "actions: read" in repair_worker
           assert "contents: read" in repair_worker
           assert "contents: write" not in repair_worker
@@ -142,6 +144,10 @@ jobs:
           assert "Restore exact repaired Candidate" in repair_verify
           assert "--expected-repair-round \"$REPAIR_ROUND\"" in repair_verify
           assert "Run trusted Validation on repaired Candidate" in repair_verify
+          assert "id: verify_upload" in repair_verify
+          assert "id: require_evidence" in repair_verify
+          assert "VERIFY_UPLOAD_OUTCOME" in repair_verify
+          assert "evidence_status: ${{ steps.require_evidence.outputs.evidence_status }}" in repair_verify
           assert "provider_api_key" not in repair_verify
           assert "opencode_go_api_key" not in repair_verify
           assert "secrets." not in repair_verify
