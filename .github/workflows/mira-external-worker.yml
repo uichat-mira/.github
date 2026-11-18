@@ -2024,32 +2024,42 @@ jobs:
             verify="$RECOVERED_VERIFY"
             verify_status="success"
             validation_result="PASS"
-          elif test -n "$R2_STATE"; then
-            state="$R2_STATE"
-            repair_round=2
-            candidate="$R2_CANDIDATE"
-            candidate_id="$R2_CANDIDATE_ID"
-            candidate_digest="$R2_CANDIDATE_DIGEST"
-            patch="$R2_PATCH"
-            tree="$R2_TREE"
-            worker_handoff="$R2_WORKER_HANDOFF"
-            verify="$R2_VERIFY"
-            verify_status="$R2_VERIFY_STATUS"
-            validation_result="$R2_VALIDATION_RESULT"
-          elif test -n "$R1_STATE"; then
-            state="$R1_STATE"
-            repair_round=1
-            candidate="$R1_CANDIDATE"
-            candidate_id="$R1_CANDIDATE_ID"
-            candidate_digest="$R1_CANDIDATE_DIGEST"
-            patch="$R1_PATCH"
-            tree="$R1_TREE"
-            worker_handoff="$R1_WORKER_HANDOFF"
-            verify="$R1_VERIFY"
-            verify_status="$R1_VERIFY_STATUS"
-            validation_result="$R1_VALIDATION_RESULT"
           else
             state="$INITIAL_STATE"
+
+            # A failed repair attempt must never erase the last durable Candidate.
+            # Advance the selected generation only after a new Candidate Artifact exists.
+            if test -n "$R1_STATE"; then
+              state="$R1_STATE"
+              validation_result="${R1_VALIDATION_RESULT:-$validation_result}"
+              if test -n "$R1_CANDIDATE_ID"; then
+                repair_round=1
+                candidate="$R1_CANDIDATE"
+                candidate_id="$R1_CANDIDATE_ID"
+                candidate_digest="$R1_CANDIDATE_DIGEST"
+                patch="$R1_PATCH"
+                tree="$R1_TREE"
+                worker_handoff="$R1_WORKER_HANDOFF"
+                verify="$R1_VERIFY"
+                verify_status="$R1_VERIFY_STATUS"
+              fi
+            fi
+
+            if test -n "$R2_STATE"; then
+              state="$R2_STATE"
+              validation_result="${R2_VALIDATION_RESULT:-$validation_result}"
+              if test -n "$R2_CANDIDATE_ID"; then
+                repair_round=2
+                candidate="$R2_CANDIDATE"
+                candidate_id="$R2_CANDIDATE_ID"
+                candidate_digest="$R2_CANDIDATE_DIGEST"
+                patch="$R2_PATCH"
+                tree="$R2_TREE"
+                worker_handoff="$R2_WORKER_HANDOFF"
+                verify="$R2_VERIFY"
+                verify_status="$R2_VERIFY_STATUS"
+              fi
+            fi
           fi
 
           case "$state" in
