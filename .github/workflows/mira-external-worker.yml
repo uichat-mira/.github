@@ -1541,6 +1541,8 @@ jobs:
           CANDIDATE_ORIGIN_RUN_ID: ${{ steps.handoff.outputs.candidate_origin_run_id }}
           CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
           FREE_MODE: ${{ inputs.free_mode }}
           REQUESTED_MODEL: ${{ inputs.model }}
@@ -1742,7 +1744,18 @@ jobs:
               },
               "recovery": recovery,
               "candidate": candidate,
-              "verification": {"command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000], "outcome": "pending_clean_room_verify"},
+              "verification": {
+                  "mode": "profile" if os.getenv("VALIDATION_PROFILE") else "legacy",
+                  "profile": os.getenv("VALIDATION_PROFILE") or None,
+                  "max_tier": os.getenv("VALIDATION_MAX_TIER") if os.getenv("VALIDATION_PROFILE") else None,
+                  "legacy_command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000] if not os.getenv("VALIDATION_PROFILE") else None,
+                  "contract": (
+                      json.loads((root / "validation-contract.json").read_text())
+                      if (root / "validation-contract.json").exists()
+                      else None
+                  ),
+                  "outcome": "pending_clean_room_verify",
+              },
               "delivery": {"outcome": "pending_verified_candidate"},
               "artifact_retention_days": 14,
               "safety": {
@@ -1770,6 +1783,7 @@ jobs:
             ${{ runner.temp }}/mira-worker/maintainer-comments.json
             ${{ runner.temp }}/mira-worker/provider-route.json
             ${{ runner.temp }}/mira-worker/contract.json
+            ${{ runner.temp }}/mira-worker/validation-contract.json
             ${{ runner.temp }}/mira-worker/recovery-state.json
             ${{ runner.temp }}/mira-worker/recovery-context.txt
             ${{ runner.temp }}/mira-worker/recovery/discovery.json
