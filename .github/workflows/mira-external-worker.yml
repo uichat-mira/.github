@@ -99,6 +99,7 @@ jobs:
       model: ${{ steps.handoff.outputs.model }}
       recovery_mode: ${{ steps.handoff.outputs.recovery_mode }}
       recovery_source_run_id: ${{ steps.handoff.outputs.recovery_source_run_id }}
+      worker_repair_round: ${{ steps.recovery.outputs.worker_repair_round }}
       candidate_artifact_name: ${{ steps.handoff.outputs.candidate_artifact_name }}
       candidate_artifact_id: ${{ steps.handoff.outputs.candidate_artifact_id }}
       candidate_artifact_digest: ${{ steps.handoff.outputs.candidate_artifact_digest }}
@@ -325,6 +326,7 @@ jobs:
               echo "mode=fresh"
               echo "run_worker=true"
               echo "source_run_id="
+              echo "worker_repair_round=0"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -635,10 +637,23 @@ jobs:
           Path(os.environ["RECOVERY_CONTEXT_FILE"]).write_text("\n".join(text) + "\n")
           PY
 
+          source_repair_round="$(jq -r '.repair_round // 0' "${root}/recovery-state.json")"
+          worker_repair_round="$source_repair_round"
+          if test "$mode" = "recoverable" && test "$(jq -r '.validation_result // ""' "${root}/recovery-state.json")" = "REPAIR"; then
+            worker_repair_round="$(jq -r '.next_repair_round // ""' "${root}/recovery-state.json")"
+          fi
+          if test "$run_worker" = "true"; then
+            case "$worker_repair_round" in
+              0|1|2) ;;
+              *) echo "::error::Recovery produced an invalid Worker repair round." >&2; exit 1 ;;
+            esac
+          fi
+
           {
             echo "mode=$mode"
             echo "run_worker=$run_worker"
             echo "source_run_id=$source_run_id"
+            echo "worker_repair_round=$worker_repair_round"
           } >> "$GITHUB_OUTPUT"
 
       - name: Enforce Validation dispatch contract before model execution
@@ -921,6 +936,7 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          REPAIR_ROUND: ${{ steps.recovery.outputs.worker_repair_round }}
           PROVIDER: ${{ steps.provider.outputs.provider }}
           MODEL: ${{ steps.provider.outputs.model }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
@@ -970,7 +986,7 @@ jobs:
             --issue-number "$ISSUE_NUMBER" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --repair-round 0 \
+            --repair-round "$REPAIR_ROUND" \
             --base-branch "$BASE_BRANCH" \
             --base-sha "$BASE_SHA" \
             --contract-fingerprint "$CONTRACT_FINGERPRINT" \
@@ -1006,6 +1022,7 @@ jobs:
                       "candidate_patch_sha256": manifest.get("candidate_patch_sha256"),
                       "candidate_patch_bytes": manifest.get("candidate_patch_bytes"),
                       "candidate_tree_oid": manifest.get("candidate_tree_oid"),
+                      "repair_round": manifest.get("repair_round", 0),
                       "worker_outcome": manifest.get("worker_outcome"),
                       "provider": manifest.get("provider"),
                       "model": manifest.get("model"),
