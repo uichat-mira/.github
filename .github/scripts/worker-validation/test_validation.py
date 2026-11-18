@@ -48,6 +48,34 @@ def run_validation(root: Path, profile_file: Path, *, profile="feature", max_tie
 
 
 class ValidationTests(unittest.TestCase):
+    def test_l0_ceiling_runs_identity_only_and_reports_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / "ran"
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "unit", "tier": "L2", "requirement": "required", "command": f"touch {marker}"}
+                ]}
+            })
+            _, report = run_validation(root, profile, max_tier="L0")
+            self.assertEqual(report["result"], "VALIDATION_GAP")
+            self.assertFalse(marker.exists())
+            diff = next(x for x in report["checks"] if x["id"] == "candidate_diff")
+            self.assertEqual(diff["status"], "skipped")
+            self.assertEqual(diff["tier"], "L1")
+
+    def test_required_check_can_classify_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "environment", "tier": "L2", "requirement": "required", "command": "exit 3", "failure_result": "BLOCKED"}
+                ]}
+            })
+            _, report = run_validation(root, profile)
+            self.assertEqual(report["result"], "BLOCKED")
+            self.assertEqual(report["failed_check"], "environment")
+
     def test_profile_pass_respects_max_tier_without_running_l4(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
