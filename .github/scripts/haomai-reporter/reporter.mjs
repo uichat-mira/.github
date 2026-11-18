@@ -89,6 +89,11 @@ export function createBatch(input) {
   const recoveryMode = outputs.recovery_mode || "";
   const repairAware = lifecycleResult === "success" &&
     ["VERIFIED", "BLOCKED", "ESCALATED", "DELIVERED"].includes(lifecycleOutputs.state);
+  const repairRoundErrorCode = (round) => {
+    if (String(round) === "1") return "VALIDATION_REPAIR_ROUND_1";
+    if (String(round) === "2") return "VALIDATION_REPAIR_ROUND_2";
+    return "VALIDATION_REPAIR_ROUND_UNKNOWN";
+  };
   const events = [];
   const add = (kind, stage, outcome, level = "info", evidence = runEvidence(id), code) => {
     events.push(reportedEvent(id, kind, stage, outcome, level, evidence, code));
@@ -130,12 +135,12 @@ export function createBatch(input) {
         evidenceArtifact(artifacts, outputs.candidate_artifact_name, outputs.candidate_artifact_id)
           ? { type: "artifact", id: String(outputs.candidate_artifact_id) }
           : runEvidence(id),
-        "VALIDATION_REPAIR_ROUND_1");
+        repairRoundErrorCode(initialRepairOutputs.next_repair_round));
     }
     if (repair1Outputs.state === "RETURNED") {
       add("recovery.detected", "repair", "returned", "warn",
         repairCandidateEvidence(repair1Outputs),
-        "VALIDATION_REPAIR_ROUND_2");
+        repairRoundErrorCode(repair1Outputs.next_repair_round));
     }
     if (repair2Outputs.state === "ESCALATED" || lifecycleOutputs.state === "ESCALATED") {
       add("recovery.failed", "repair", "escalated", "warn",
