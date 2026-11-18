@@ -84,6 +84,7 @@ Rules:
 - commands are bounded to 4096 characters;
 - checks are executed in tier order, preserving repository order inside one tier;
 - profile content is read from the **exact Candidate base SHA before Candidate restore**. A Worker cannot authorize a new command by modifying the profile inside its Candidate.
+- profile-mode checks must not mutate tracked or non-ignored Candidate state. If a check changes that state, Validation returns `BLOCKED`; later checks do not run. Validation logs/evidence live outside the Candidate workspace.
 
 ### Requirement
 
