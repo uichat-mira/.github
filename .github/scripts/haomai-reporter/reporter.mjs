@@ -133,7 +133,7 @@ export function createBatch(input) {
     outputs.recovered_verify_upload_outcome === "success" &&
     artifactByName(artifacts, outputs.verification_artifact_name);
   const verified = verifyEvidence || recoveredVerify;
-  const successfulDelivery = deliveryEvidence && candidate &&
+  const successfulDelivery = workerResult === "success" && deliveryEvidence && candidate &&
     (verified || recoveryMode === "delivery_complete");
   const alreadyDelivered = recoveryMode === "delivery_complete" && workerResult === "success" &&
     Number.isSafeInteger(prNumber) && prNumber > 0;
