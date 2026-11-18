@@ -25,6 +25,18 @@ The `mira-external-worker-<run_id>` Artifact contains bounded Worker/Capture evi
 
 The recoverable `candidate.patch` and `candidate.json` remain in a **separate immutable Candidate Artifact** named for run/attempt.
 
+### Repair evidence
+
+A repairable Validation result may produce bounded repair-generation evidence before ordinary Verify/Delivery continues:
+
+- `repair-context.json` — allowlisted Issue, canonical amendments, Candidate identity, structured Validation failure/gaps, trusted evidence reference and repair round; never a model transcript;
+- repaired Candidate Artifact — the next immutable Candidate generation with `repair_round=1` or `2`;
+- repair Worker handoff — bounded session metadata/output and Candidate capture evidence for that repair Runner;
+- repair Verify Artifact — clean-runner restore + structured Validation evidence bound to the repaired Candidate generation;
+- repair outcome Artifact — `RETURNED / VERIFIED / BLOCKED / ESCALATED` decision evidence.
+
+The trusted `lifecycle_handoff` stage selects one current durable Candidate generation. Delivery, Recovery projection and Reporter consume that selection rather than maintaining separate “latest Candidate” guesses.
+
 ### Verify evidence
 
 The `mira-external-worker-verify-<run_id>-<attempt>` Artifact records:
@@ -108,7 +120,7 @@ Pointer selection follows Candidate-origin run ID/attempt, so a delayed Delivery
 AGT-058 no longer compresses the entire pipeline into one terminal status. The Actions job graph and role-specific evidence distinguish:
 
 - **Worker/Capture failure** — no Verify or Delivery is authorized; a successfully uploaded Candidate may still be recoverable.
-- **Verify non-PASS** — Candidate and Verify/Validation evidence remain; `REPAIR`, `BLOCKED`, and `VALIDATION_GAP` all prevent Delivery while preserving their distinct structured result.
+- **Verify non-PASS** — Candidate and Verify/Validation evidence remain. `REPAIR` may enter at most two bounded repair generations; `BLOCKED` and `VALIDATION_GAP` stop automatic model execution; exhausted repair becomes `ESCALATED`.
 - **Delivery failure** — Verify already passed for the same Candidate identity; the next run may enter `delivery_retry_only`, reusing trusted Verify evidence without provider/model execution. Branch and Draft PR delivery are idempotent: an exact existing Candidate branch/PR is reused, while mismatched existing state fails closed.
 - **Delivery-only retry** — Candidate and Verify evidence re-publication outcomes are recorded separately; Delivery is allowed only when both re-publications succeeded.
 - **Already delivered** — a later dispatch returns the previously verified branch/PR identity without creating a new branch, rerunning Verify, or creating another PR.

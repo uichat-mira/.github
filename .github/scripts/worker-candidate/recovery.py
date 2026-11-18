@@ -249,6 +249,7 @@ def discover(args: argparse.Namespace) -> int:
         key=lambda x: (
             as_int("Candidate origin run id", x.get("candidate_origin_run_id")),
             as_int("Candidate origin run attempt", x.get("candidate_origin_run_attempt")),
+            as_int("Candidate origin repair round", x.get("candidate_origin_repair_round", 0)),
             as_int("pointer run id", x.get("run_id")),
             as_int("pointer run attempt", x.get("run_attempt")),
             as_int("pointer comment id", x.get("_comment_id")),
@@ -304,6 +305,11 @@ def validate_verify_evidence(
     require_equal("verify repository", verify.get("repository"), repository)
     require_equal("verify run id", as_int("verify run id", verify.get("run_id")), as_int("candidate run id", manifest.get("run_id")))
     require_equal("verify run attempt", as_int("verify run attempt", verify.get("run_attempt")), as_int("candidate run attempt", manifest.get("run_attempt")))
+    require_equal(
+        "verify repair round",
+        as_int("verify repair round", verify.get("repair_round", 0)),
+        as_int("candidate repair round", manifest.get("repair_round", 0)),
+    )
     require_equal("verify base SHA", verify.get("base_sha"), manifest.get("base_sha"))
     require_equal("verify patch digest", verify.get("candidate_patch_sha256"), manifest.get("candidate_patch_sha256"))
     require_equal("verify tree", verify.get("candidate_tree_oid"), manifest.get("candidate_tree_oid"))
@@ -372,6 +378,12 @@ def decide(args: argparse.Namespace) -> int:
         "source_run_id": pointer.get("run_id") if isinstance(pointer, dict) else None,
         "source_run_attempt": pointer.get("run_attempt") if isinstance(pointer, dict) else None,
         "source_base_sha": pointer.get("base_sha") if isinstance(pointer, dict) else None,
+        "repair_round": (
+            int(pointer.get("candidate_origin_repair_round", 0))
+            if isinstance(pointer, dict) and str(pointer.get("candidate_origin_repair_round", 0)).isdigit()
+            else 0
+        ),
+        "next_repair_round": None,
     }
 
     try:
@@ -384,6 +396,9 @@ def decide(args: argparse.Namespace) -> int:
         require_equal("pointer Issue number", as_int("pointer Issue number", pointer.get("issue_number")), args.issue_number)
         require_equal("Candidate origin run id", as_int("Candidate run id", manifest.get("run_id")), as_int("pointer Candidate origin run id", pointer.get("candidate_origin_run_id")))
         require_equal("Candidate origin run attempt", as_int("Candidate run attempt", manifest.get("run_attempt")), as_int("pointer Candidate origin run attempt", pointer.get("candidate_origin_run_attempt")))
+        candidate_repair_round = as_int("Candidate repair round", manifest.get("repair_round", 0))
+        pointer_repair_round = as_int("pointer Candidate origin repair round", pointer.get("candidate_origin_repair_round", 0))
+        require_equal("Candidate origin repair round", candidate_repair_round, pointer_repair_round)
         require_equal("base branch", manifest.get("base_branch"), pointer.get("base_branch"))
         expected_worker_branch = (
             f"feat/worker-{args.issue_number}-"
@@ -410,9 +425,29 @@ def decide(args: argparse.Namespace) -> int:
     ):
         result.update(
             mode="contract_drift",
-            run_worker=True,
+            run_worker=False,
             reuse_candidate=False,
-            reason="current_contract_differs_from_candidate_contract",
+            reason="current_contract_differs_from_candidate_contract_requires_maintainer_review",
+        )
+        dump_json(result, args.output)
+        return 0
+
+    lifecycle_state = pointer.get("lifecycle_state")
+    if lifecycle_state == "ESCALATED":
+        result.update(
+            mode="escalated",
+            run_worker=False,
+            reuse_candidate=False,
+            reason="prior_lifecycle_escalated_to_maintainer",
+        )
+        dump_json(result, args.output)
+        return 0
+    if lifecycle_state == "BLOCKED":
+        result.update(
+            mode="recovery_failed",
+            run_worker=False,
+            reuse_candidate=False,
+            reason="prior_lifecycle_blocked_requires_maintainer_review",
         )
         dump_json(result, args.output)
         return 0
@@ -500,10 +535,18 @@ def decide(args: argparse.Namespace) -> int:
                 ),
                 validation_result=validation_result,
             )
+        elif validation_result == "REPAIR" and result["repair_round"] >= 2:
+            result.update(
+                mode="escalated",
+                run_worker=False,
+                reuse_candidate=False,
+                reason="repair_round_limit_exhausted",
+                validation_result=validation_result,
+            )
         else:
-            # Legacy Verify evidence has no validation_result. Preserve its
-            # historical continuation behavior; structured REPAIR is the new
-            # explicit code-repair classification.
+            # Historical Verify evidence without validation_result preserves the
+            # pre-AGT-067 continuation path. Structured REPAIR remains recoverable
+            # only while the bounded AGT-068 repair budget is not exhausted.
             result.update(
                 mode="recoverable",
                 run_worker=True,
@@ -514,6 +557,11 @@ def decide(args: argparse.Namespace) -> int:
                     else "prior_verification_failed"
                 ),
                 validation_result=validation_result,
+                next_repair_round=(
+                    result["repair_round"] + 1
+                    if validation_result == "REPAIR"
+                    else None
+                ),
             )
         dump_json(result, args.output)
         return 0

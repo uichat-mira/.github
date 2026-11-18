@@ -169,6 +169,8 @@ def capture(args: argparse.Namespace) -> int:
         raise CandidateError("worker outcome must be a lowercase stable token")
     if args.issue_number < 1 or args.run_attempt < 1:
         raise CandidateError("issue number and run attempt must be positive")
+    if args.repair_round < 0 or args.repair_round > 2:
+        raise CandidateError("repair round must be between 0 and 2")
     if args.max_patch_bytes < 0:
         raise CandidateError("max patch bytes must be non-negative")
 
@@ -217,6 +219,7 @@ def capture(args: argparse.Namespace) -> int:
             "issue_number": args.issue_number,
             "run_id": args.run_id,
             "run_attempt": args.run_attempt,
+            "repair_round": args.repair_round,
             "base_branch": args.base_branch,
             "base_sha": base_sha,
             "contract_fingerprint": args.contract_fingerprint,
@@ -287,6 +290,11 @@ def restore(args: argparse.Namespace) -> int:
         raise CandidateError("candidate repository identity mismatch")
     if int(manifest["issue_number"]) != args.expected_issue_number:
         raise CandidateError("candidate Issue identity mismatch")
+    repair_round = manifest.get("repair_round", 0)
+    if not isinstance(repair_round, int) or repair_round < 0 or repair_round > 2:
+        raise CandidateError("candidate repair round is invalid")
+    if args.expected_repair_round >= 0 and repair_round != args.expected_repair_round:
+        raise CandidateError("candidate repair round does not match trusted expected round")
     expected_base = normalize_base_sha(repo, args.expected_base_sha)
     if manifest["base_sha"] != expected_base:
         raise CandidateError("candidate base SHA does not match trusted expected base")
@@ -321,6 +329,7 @@ def restore(args: argparse.Namespace) -> int:
     print(json.dumps({
         "candidate_patch_sha256": actual_digest,
         "candidate_tree_oid": tree_oid,
+        "repair_round": repair_round,
         "restored": True,
     }, sort_keys=True))
     return 0
@@ -337,6 +346,7 @@ def parser() -> argparse.ArgumentParser:
     cap.add_argument("--issue-number", required=True, type=int)
     cap.add_argument("--run-id", required=True)
     cap.add_argument("--run-attempt", required=True, type=int)
+    cap.add_argument("--repair-round", type=int, default=0)
     cap.add_argument("--base-branch", required=True)
     cap.add_argument("--base-sha", required=True)
     cap.add_argument("--contract-fingerprint", required=True)
@@ -352,6 +362,7 @@ def parser() -> argparse.ArgumentParser:
     res.add_argument("--candidate-dir", required=True)
     res.add_argument("--expected-repository", required=True)
     res.add_argument("--expected-issue-number", required=True, type=int)
+    res.add_argument("--expected-repair-round", type=int, default=-1)
     res.add_argument("--expected-base-sha", required=True)
     res.add_argument("--expected-contract-fingerprint", default="")
     res.set_defaults(func=restore)

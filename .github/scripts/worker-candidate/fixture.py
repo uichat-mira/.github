@@ -48,7 +48,7 @@ def init_repo(root: Path) -> tuple[Path, str]:
     return repo, git(repo, "rev-parse", "HEAD")
 
 
-def capture(repo: Path, out: Path, base: str, *, max_bytes=None, expect=0):
+def capture(repo: Path, out: Path, base: str, *, repair_round=0, max_bytes=None, expect=0):
     cmd = [
         sys.executable, str(CANDIDATE), "capture",
         "--repo", str(repo),
@@ -57,6 +57,7 @@ def capture(repo: Path, out: Path, base: str, *, max_bytes=None, expect=0):
         "--issue-number", str(ISSUE),
         "--run-id", "fixture-run",
         "--run-attempt", "1",
+        "--repair-round", str(repair_round),
         "--base-branch", "main",
         "--base-sha", base,
         "--contract-fingerprint", FINGERPRINT,
@@ -77,8 +78,8 @@ def clone_at(root: Path, source: Path, base: str, name="restore") -> Path:
     return target
 
 
-def restore(repo: Path, cand: Path, base: str, *, expect=0):
-    return run([
+def restore(repo: Path, cand: Path, base: str, *, expected_repair_round=None, expect=0):
+    cmd = [
         sys.executable, str(CANDIDATE), "restore",
         "--repo", str(repo),
         "--candidate-dir", str(cand),
@@ -86,7 +87,10 @@ def restore(repo: Path, cand: Path, base: str, *, expect=0):
         "--expected-issue-number", str(ISSUE),
         "--expected-base-sha", base,
         "--expected-contract-fingerprint", FINGERPRINT,
-    ], expect=expect)
+    ]
+    if expected_repair_round is not None:
+        cmd += ["--expected-repair-round", str(expected_repair_round)]
+    return run(cmd, expect=expect)
 
 
 def assert_round_trip(name, mutate, verify=None):
@@ -170,6 +174,24 @@ def main():
         p = restore(restored, bad_tree, base, expect=2)
         assert "tree identity mismatch" in p.stderr
         print("PASS negative: tree identity mismatch")
+
+    with tempfile.TemporaryDirectory(prefix="mira-repair-round-") as td:
+        root = Path(td)
+        repo, base = init_repo(root)
+        (repo / "tracked.txt").write_text("repair generation\n")
+        cand = root / "candidate"
+        capture(repo, cand, base, repair_round=1)
+        manifest = json.loads((cand / "candidate.json").read_text())
+        assert manifest["repair_round"] == 1
+        restored = clone_at(root, repo, base, "restore-repair-round")
+        restored_result = restore(restored, cand, base, expected_repair_round=1)
+        restored_payload = json.loads(restored_result.stdout)
+        assert restored_payload["repair_round"] == 1
+
+        wrong_round = clone_at(root, repo, base, "restore-wrong-repair-round")
+        p = restore(wrong_round, cand, base, expected_repair_round=0, expect=2)
+        assert "repair round" in p.stderr
+        print("PASS Candidate repair generation identity")
 
     with tempfile.TemporaryDirectory(prefix="mira-sensitive-") as td:
         root = Path(td)

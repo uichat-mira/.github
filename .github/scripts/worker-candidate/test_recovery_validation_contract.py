@@ -40,7 +40,14 @@ def fingerprint(*, profile="", max_tier="", validation_contract_sha256="", verif
         return json.loads(output.read_text())
 
 
-def recovery_decision(validation_result="REPAIR", *, include_result=True):
+def recovery_decision(
+    validation_result="REPAIR",
+    *,
+    include_result=True,
+    repair_round=0,
+    lifecycle_state=None,
+    contract_matches=True,
+):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         fingerprint_value = "sha256:" + "1" * 64
@@ -54,6 +61,7 @@ def recovery_decision(validation_result="REPAIR", *, include_result=True):
             "issue_number": 84,
             "run_id": "100",
             "run_attempt": 1,
+            "repair_round": repair_round,
             "base_branch": "dev",
             "base_sha": base_value,
             "contract_fingerprint": fingerprint_value,
@@ -68,6 +76,7 @@ def recovery_decision(validation_result="REPAIR", *, include_result=True):
             "run_attempt": 1,
             "candidate_origin_run_id": 100,
             "candidate_origin_run_attempt": 1,
+            "candidate_origin_repair_round": repair_round,
             "base_branch": "dev",
             "base_sha": base_value,
             "worker_branch": "feat/worker-84-100-1",
@@ -78,12 +87,15 @@ def recovery_decision(validation_result="REPAIR", *, include_result=True):
             "verification_state": "failure",
             "delivery_state": "skipped",
         }
+        if lifecycle_state is not None:
+            pointer["lifecycle_state"] = lifecycle_state
         verify = {
             "schema_version": 2,
             "job_role": "verify",
             "repository": "uichat-mira/demo",
             "run_id": "100",
             "run_attempt": "1",
+            "repair_round": repair_round,
             "base_sha": base_value,
             "candidate_patch_sha256": patch_value,
             "candidate_tree_oid": tree_value,
@@ -92,7 +104,10 @@ def recovery_decision(validation_result="REPAIR", *, include_result=True):
         }
         if include_result:
             verify["validation_result"] = validation_result
-        contract = {"fingerprint": fingerprint_value, "ambiguity_guard": guard_value}
+        contract = {
+            "fingerprint": fingerprint_value if contract_matches else "sha256:" + "9" * 64,
+            "ambiguity_guard": guard_value,
+        }
 
         paths = {}
         for name, value in {
@@ -180,6 +195,8 @@ class RecoveryValidationContractTests(unittest.TestCase):
         self.assertTrue(result["run_worker"])
         self.assertTrue(result["reuse_candidate"])
         self.assertEqual(result["reason"], "prior_validation_repair")
+        self.assertEqual(result["repair_round"], 0)
+        self.assertEqual(result["next_repair_round"], 1)
 
     def test_blocked_validation_does_not_redispatch_worker(self):
         result = recovery_decision("BLOCKED")
@@ -198,6 +215,71 @@ class RecoveryValidationContractTests(unittest.TestCase):
         self.assertEqual(result["mode"], "recoverable")
         self.assertTrue(result["run_worker"])
         self.assertEqual(result["reason"], "prior_verification_failed")
+
+
+    def test_cross_run_repair_from_round_one_consumes_round_two(self):
+        result = recovery_decision("REPAIR", repair_round=1)
+        self.assertEqual(result["mode"], "recoverable")
+        self.assertTrue(result["run_worker"])
+        self.assertEqual(result["repair_round"], 1)
+        self.assertEqual(result["next_repair_round"], 2)
+
+    def test_second_repair_failure_escalates_across_runs(self):
+        result = recovery_decision("REPAIR", repair_round=2)
+        self.assertEqual(result["mode"], "escalated")
+        self.assertFalse(result["run_worker"])
+        self.assertFalse(result["reuse_candidate"])
+        self.assertEqual(result["repair_round"], 2)
+
+    def test_blocked_lifecycle_state_cannot_be_revived_by_old_repair_evidence(self):
+        result = recovery_decision("REPAIR", repair_round=1, lifecycle_state="BLOCKED")
+        self.assertEqual(result["mode"], "recovery_failed")
+        self.assertFalse(result["run_worker"])
+        self.assertEqual(result["reason"], "prior_lifecycle_blocked_requires_maintainer_review")
+
+    def test_escalated_lifecycle_state_cannot_be_revived_by_new_dispatch(self):
+        result = recovery_decision("REPAIR", repair_round=2, lifecycle_state="ESCALATED")
+        self.assertEqual(result["mode"], "escalated")
+        self.assertFalse(result["run_worker"])
+        self.assertEqual(result["reason"], "prior_lifecycle_escalated_to_maintainer")
+
+    def test_contract_drift_stops_for_maintainer_instead_of_restarting_worker(self):
+        result = recovery_decision("REPAIR", contract_matches=False)
+        self.assertEqual(result["mode"], "contract_drift")
+        self.assertFalse(result["run_worker"])
+        self.assertFalse(result["reuse_candidate"])
+
+    def test_verify_evidence_repair_round_must_match_candidate_generation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = {
+                "run_id": "100",
+                "run_attempt": 1,
+                "repair_round": 2,
+                "base_sha": "a" * 40,
+                "candidate_patch_sha256": "sha256:" + "3" * 64,
+                "candidate_tree_oid": "b" * 40,
+                "contract_fingerprint": "sha256:" + "1" * 64,
+            }
+            verify = {
+                "job_role": "verify",
+                "repository": "uichat-mira/demo",
+                "run_id": "100",
+                "run_attempt": "1",
+                "repair_round": 1,
+                "base_sha": manifest["base_sha"],
+                "candidate_patch_sha256": manifest["candidate_patch_sha256"],
+                "candidate_tree_oid": manifest["candidate_tree_oid"],
+                "contract_fingerprint": manifest["contract_fingerprint"],
+                "terminal_status": "failure",
+                "validation_result": "REPAIR",
+            }
+            with self.assertRaises(MODULE.RecoveryError):
+                MODULE.validate_verify_evidence(
+                    verify,
+                    repository="uichat-mira/demo",
+                    manifest=manifest,
+                )
 
 
 if __name__ == "__main__":

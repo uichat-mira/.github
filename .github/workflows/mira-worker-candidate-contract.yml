@@ -4,8 +4,11 @@ on:
   pull_request:
     paths:
       - '.github/scripts/worker-candidate/**'
+      - '.github/scripts/worker-repair/**'
+      - '.github/scripts/worker-runtime/**'
       - '.github/workflows/mira-worker-candidate-contract.yml'
       - '.github/workflows/mira-external-worker.yml'
+      - '.github/workflows/mira-external-worker-repair.yml'
       - 'docs/governance/external-worker-candidate.md'
       - 'docs/governance/external-worker-evidence.md'
   workflow_dispatch:
@@ -40,22 +43,34 @@ jobs:
       - name: Run Delivery idempotency fixtures
         run: python3 .github/scripts/worker-candidate/delivery_fixture.py
 
-      - name: Assert production split-job topology, Recovery and permissions
+      - name: Assert production repair topology, Recovery and permissions
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           workflow = Path(".github/workflows/mira-external-worker.yml").read_text()
+          repair = Path(".github/workflows/mira-external-worker-repair.yml").read_text()
+          runtime = Path(".github/scripts/worker-runtime/run-worker.sh").read_text()
 
           worker_start = workflow.index("  worker_capture:")
           verify_start = workflow.index("\n  verify:", worker_start)
-          delivery_start = workflow.index("\n  delivery:", verify_start)
+          decision_start = workflow.index("\n  initial_repair_outcome:", verify_start)
+          repair1_start = workflow.index("\n  repair_round_1:", decision_start)
+          repair2_start = workflow.index("\n  repair_round_2:", repair1_start)
+          lifecycle_start = workflow.index("\n  lifecycle_handoff:", repair2_start)
+          delivery_start = workflow.index("\n  delivery:", lifecycle_start)
           recovery_index_start = workflow.index("\n  recovery_index:", delivery_start)
+          reporter_start = workflow.index("\n  trusted_reporter:", recovery_index_start)
 
           worker = workflow[worker_start:verify_start]
-          verify = workflow[verify_start:delivery_start]
+          verify = workflow[verify_start:decision_start]
+          decision = workflow[decision_start:repair1_start]
+          repair1 = workflow[repair1_start:repair2_start]
+          repair2 = workflow[repair2_start:lifecycle_start]
+          lifecycle = workflow[lifecycle_start:delivery_start]
           delivery = workflow[delivery_start:recovery_index_start]
-          recovery_index = workflow[recovery_index_start:]
+          recovery_index = workflow[recovery_index_start:reporter_start]
+          reporter = workflow[reporter_start:]
 
           assert "value: $" + "{{ jobs.worker_capture.outputs.worker_branch }}" in workflow
           assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}" in workflow
@@ -67,28 +82,27 @@ jobs:
           assert "contents: write" not in worker
           assert "pull-requests: write" not in worker
           assert "Discover and prepare Candidate Recovery" in worker
-          assert "mira-recovery-candidate:v1" not in worker
-          assert "recovery_failed" in worker
           assert "delivery_retry_only" in worker
           assert "candidate_artifact_unavailable_or_expired" in worker
           assert "base_advanced_clean_3way" in worker
           assert "base_advanced_3way_conflict" in worker
-          assert "Re-publish verified Candidate for Delivery-only retry" in worker
-          assert "candidate_base_sha" in worker
-          assert "--base-branch \"$BASE_BRANCH\"" in worker
-          assert "--verification-command \"$VERIFICATION_COMMAND\"" in worker
-          assert "--validation-profile \"$VALIDATION_PROFILE\"" in worker
-          assert "--validation-max-tier \"$VALIDATION_MAX_TIER\"" in worker
           assert "validation-contract.json" in worker
           assert "Enforce Validation dispatch contract before model execution" in worker
           assert worker.index("Enforce Validation dispatch contract before model execution") < worker.index("Resolve run-scoped Worker provider route")
-          assert "VALIDATION_DISPATCH_OUTCOME" in worker
-          assert "candidate_artifact_identity_mismatch_or_expired" in worker
-          assert "candidate_exact_restore_failed" in worker
-          assert "Report already delivered Candidate" in worker
+          assert "Load trusted shared Worker runtime" in worker
+          assert "trusted-worker-runtime.sh" in worker
+          assert 'bash "${RUNNER_TEMP}/mira-worker/trusted-worker-runtime.sh"' in worker
+          assert "trusted-repair.py" in worker
+          assert "structured_repair_context_build_failed" in worker
+          assert '--repair-round "$worker_repair_round"' in worker or '--repair-round "$REPAIR_ROUND"' in worker
+          assert 'worker_repair_round="$source_repair_round"' in worker
+          assert 'worker_repair_round="$(jq -r ' in worker
+          assert '.next_repair_round // ""' in worker
+          assert '--repair-round "$REPAIR_ROUND"' in worker
           assert "Capture durable Candidate" in worker
-          assert "Run trusted repository verification" not in worker
           assert "Commit/push or reuse exact verified Candidate branch" not in worker
+          assert "opencode run" not in worker
+          assert "opencode run" in runtime
 
           assert "needs: worker_capture" in verify
           assert "contents: read" in verify
@@ -97,78 +111,121 @@ jobs:
           assert "contents: write" not in verify
           assert "pull-requests: write" not in verify
           assert "secrets." not in verify
-          assert "GH_TOKEN:" not in verify
           assert "Checkout exact Candidate base" in verify
-          assert "Download immutable Candidate" in verify
           assert "Restore exact Candidate in clean Runner" in verify
+          assert "--expected-repair-round \"$EXPECTED_REPAIR_ROUND\"" in verify
           assert "Run trusted Validation ladder" in verify
           assert "validation-report.json" in verify
-          assert "validation_result" in verify
-          assert "Require verified Candidate" in verify
+          assert '"repair_round": int(os.getenv("REPAIR_ROUND") or "0")' in verify
+          assert "needs.worker_capture.outputs.candidate_repair_round" in verify
+          assert "Require trustworthy Validation evidence" in verify
+          assert "Require verified Candidate" not in verify
 
-          assert "needs:\n      - worker_capture\n      - verify" in delivery
-          assert "delivery_retry_only" in delivery
+          assert '--completed-rounds "$COMPLETED_REPAIR_ROUNDS"' in decision
+          assert "needs.worker_capture.outputs.candidate_repair_round" in decision
+          assert "state == 'RETURNED'" in repair1
+          expr_open = "$" + "{{"
+          assert "repair_round: " + expr_open + " fromJSON(needs.initial_repair_outcome.outputs.next_repair_round) }}" in repair1
+          assert "state == 'RETURNED'" in repair2
+          assert "repair_round: " + expr_open + " fromJSON(needs.repair_round_1.outputs.next_repair_round) }}" in repair2
+          assert "repair_round_3:" not in workflow
+          assert workflow.count("uses: ./.github/workflows/mira-external-worker-repair.yml") == 2
+
+          assert "  repair_worker:" in repair
+          assert "  verify:" in repair
+          assert "  outcome:" in repair
+          repair_worker_start = repair.index("  repair_worker:")
+          repair_verify_start = repair.index("\n  verify:", repair_worker_start)
+          repair_outcome_start = repair.index("\n  outcome:", repair_verify_start)
+          repair_worker = repair[repair_worker_start:repair_verify_start]
+          repair_verify = repair[repair_verify_start:repair_outcome_start]
+          repair_outcome = repair[repair_outcome_start:]
+          assert "Download source Candidate" in repair_worker
+          assert "Download trusted Validation evidence" in repair_worker
+          assert "Build bounded trusted repair context" in repair_worker
+          assert "Run bounded repair Worker" in repair_worker
+          assert "--repair-round \"$REPAIR_ROUND\"" in repair_worker
+          assert "id: worker_handoff_upload" in repair_worker
+          assert "WORKER_HANDOFF_UPLOAD_OUTCOME" in repair_worker
+          assert "actions: read" in repair_worker
+          assert "contents: read" in repair_worker
+          assert "contents: write" not in repair_worker
+          assert "pull-requests: write" not in repair_worker
+          assert "Restore exact repaired Candidate" in repair_verify
+          assert "--expected-repair-round \"$REPAIR_ROUND\"" in repair_verify
+          assert "Run trusted Validation on repaired Candidate" in repair_verify
+          assert "id: verify_upload" in repair_verify
+          assert "id: require_evidence" in repair_verify
+          assert "VERIFY_UPLOAD_OUTCOME" in repair_verify
+          assert "evidence_status: " + expr_open + " steps.require_evidence.outputs.evidence_status }}" in repair_verify
+          assert "provider_api_key" not in repair_verify
+          assert "opencode_go_api_key" not in repair_verify
+          assert "secrets." not in repair_verify
+          assert "github_mutation_authority:false" in repair_verify
+          assert '--completed-rounds "$REPAIR_ROUND"' in repair_outcome
+          assert "worker_failure" in repair_outcome
+          assert "verify_infrastructure" in repair_outcome
+
+          assert "Select current Candidate generation exactly once" in lifecycle
+          assert "A failed repair attempt must never erase the last durable Candidate" in lifecycle
+          assert 'case "$state" in' in lifecycle
+          assert "VERIFIED|BLOCKED|ESCALATED|DELIVERED" in lifecycle
+          assert "candidate_artifact_id" in lifecycle
+          assert "repair_round" in lifecycle
+          assert "R1_REPAIR_ROUND" in lifecycle
+          assert "R2_REPAIR_ROUND" in lifecycle
+          assert 'repair_round="$R1_REPAIR_ROUND"' in lifecycle
+          assert 'repair_round="$R2_REPAIR_ROUND"' in lifecycle
+
+          assert "lifecycle_handoff" in delivery
+          assert "outputs.state == 'VERIFIED'" in delivery
           assert "Resolve verified Delivery handoff" in delivery
+          assert "needs.lifecycle_handoff.outputs.candidate_artifact_name" in delivery
+          assert "needs.lifecycle_handoff.outputs.worker_handoff_artifact_name" in delivery
           assert "Commit/push or reuse exact verified Candidate branch" in delivery
           assert 'python3 "$root/trusted-delivery.py" ensure-branch' in delivery
           assert 'python3 "$root/trusted-delivery.py" ensure-pr' in delivery
-          boundary_start = delivery.index("Verify Draft PR and exact Candidate delivery boundary")
-          boundary = delivery[boundary_start:]
-          assert "needs.verify.outputs.candidate_tree_oid" not in boundary
-          assert "steps.verified_handoff.outputs.candidate_tree_oid" in boundary
-          assert "delivery_complete" in delivery
-          assert "needs.worker_capture.outputs.candidate_base_sha" in delivery
           assert "contents: write" in delivery
-          assert "issues: none" in delivery
           assert "issues: write" not in delivery
-          assert "actions: read" not in delivery
           assert "pull-requests: write" in delivery
           assert "secrets." not in delivery
           assert "opencode run" not in delivery
-          assert "opencode_go_api_key" not in delivery
           assert "provider_api_key" not in delivery
-          assert "Download Verify evidence" in delivery
-          assert "Assert verified Candidate identity" in delivery
-          assert "Commit/push or reuse exact verified Candidate branch" in delivery
-          assert "Create Draft PR with durable handoff" in delivery
-          assert "Verify Draft PR and exact Candidate delivery boundary" in delivery
-          assert "value: $" + "{{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}" in workflow
-          assert "pull_request_url: $" + "{{ steps.handoff.outputs.pull_request_url }}" in worker
-          assert "RECOVERED_CANDIDATE_UPLOAD_OUTCOME" in worker
-          assert "RECOVERED_VERIFY_UPLOAD_OUTCOME" in worker
-          assert "verify_evidence_republish" in worker
-          assert "recovery_mode != 'delivery_complete'" in recovery_index
+          assert "opencode_go_api_key" not in delivery
+          assert "--expected-repair-round \"$EXPECTED_REPAIR_ROUND\"" in delivery
+
+          assert "lifecycle_handoff" in recovery_index
+          assert "candidate_origin_repair_round" in recovery_index
+          assert "lifecycle_state" in recovery_index
+          assert "validation_result" in recovery_index
+          assert "mira-recovery-candidate:v1" in recovery_index
+          assert "issues: write" in recovery_index
+          assert "contents: none" in recovery_index
           assert "recovered_candidate_upload_outcome == 'success'" in recovery_index
           assert "recovered_verify_upload_outcome == 'success'" in recovery_index
-          assert "recovered_candidate_upload_outcome" in worker
-          assert "recovered_verify_upload_outcome" in worker
+
+          assert "contract_drift" in worker
+          assert "escalated" in worker
+          assert "steps.recovery.outputs.mode == 'contract_drift'" in worker
+          assert "steps.recovery.outputs.mode == 'escalated'" in worker
+
+          for stage in ("initial_repair_outcome", "repair_round_1", "repair_round_2", "lifecycle_handoff"):
+              assert f"      - {stage}" in reporter
+          assert "continue-on-error: true" in reporter
+
           assert not any(line.strip().startswith("timeout-minutes:") and "inputs.timeout_minutes" in line for line in workflow.splitlines())
           assert "default: 60" in workflow
-          assert "SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}" in worker
-          assert "NOT a hard deadline" in worker
-          assert '--head-owner "$GITHUB_REPOSITORY_OWNER"' in delivery
+          assert "SOFT_BUDGET_MINUTES: $" + "{{ inputs.timeout_minutes }}" in worker
+          assert "NOT a hard deadline" in runtime
+          exact = "https://raw.githubusercontent.com/" + "$" + "{{ job.workflow_repository }}/" + "$" + "{{ job.workflow_sha }}"
+          assert exact + "/.github/scripts/worker-candidate/recovery.py" in worker
+          assert exact + "/.github/scripts/worker-validation/validation.py" in worker
+          assert exact + "/.github/scripts/worker-runtime/run-worker.sh" in worker
+          assert exact + "/.github/scripts/worker-repair/repair.py" in repair
+          assert exact + "/.github/scripts/worker-candidate/candidate.py" in repair
 
           assert delivery.index("Assert verified Candidate identity") < delivery.index("Commit/push or reuse exact verified Candidate branch")
           assert delivery.index("Commit/push or reuse exact verified Candidate branch") < delivery.index("Create Draft PR with durable handoff")
-
-          assert "issues: write" in recovery_index
-          assert "contents: none" in recovery_index
-          assert "mira-recovery-candidate:v1" in recovery_index
-          assert "invalid_latest_pointer" in worker
-          assert "latest_recovery_pointer_invalid" in worker
-          assert "https://raw.githubusercontent.com/" + "$" + "{{ job.workflow_repository }}/" + "$" + "{{ job.workflow_sha }}/.github/scripts/worker-candidate/recovery.py" in worker
-          assert "https://raw.githubusercontent.com/" + "$" + "{{ job.workflow_repository }}/" + "$" + "{{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" in worker
-          assert "candidate_origin_run_id" in recovery_index
-          assert "candidate_artifact_id" in recovery_index
-          assert "normalize_artifact_digest" in worker
-          assert 'pointer_artifact_digest="$(normalize_artifact_digest' in worker
-          assert 'normal_candidate_digest="$(normalize_artifact_digest' in worker
-          assert 'recovered_candidate_digest="$(normalize_artifact_digest' in worker
-          assert "contract_fingerprint" in recovery_index
-          assert "ambiguity_guard" in recovery_index
-          assert "git diff --check" not in worker[worker.index("Require a bounded implementation change"):worker.index("Re-publish verified Candidate for Delivery-only retry")]
-          assert "validation_profile:" in workflow
-          assert "validation_max_tier:" in workflow
           PY
 
   fixture-worker-capture:

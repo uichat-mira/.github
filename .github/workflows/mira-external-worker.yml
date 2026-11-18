@@ -75,6 +75,7 @@ on:
         value: ${{ jobs.delivery.outputs.pull_request_url || jobs.worker_capture.outputs.pull_request_url }}
 
 permissions:
+  actions: read
   contents: read
   issues: read
   pull-requests: none
@@ -98,6 +99,7 @@ jobs:
       model: ${{ steps.handoff.outputs.model }}
       recovery_mode: ${{ steps.handoff.outputs.recovery_mode }}
       recovery_source_run_id: ${{ steps.handoff.outputs.recovery_source_run_id }}
+      worker_repair_round: ${{ steps.recovery.outputs.worker_repair_round }}
       candidate_artifact_name: ${{ steps.handoff.outputs.candidate_artifact_name }}
       candidate_artifact_id: ${{ steps.handoff.outputs.candidate_artifact_id }}
       candidate_artifact_digest: ${{ steps.handoff.outputs.candidate_artifact_digest }}
@@ -105,6 +107,7 @@ jobs:
       recovered_verify_upload_outcome: ${{ steps.recovered_verify_upload.outcome }}
       candidate_patch_sha256: ${{ steps.handoff.outputs.candidate_patch_sha256 }}
       candidate_tree_oid: ${{ steps.handoff.outputs.candidate_tree_oid }}
+      candidate_repair_round: ${{ steps.handoff.outputs.candidate_repair_round }}
       contract_fingerprint: ${{ steps.handoff.outputs.contract_fingerprint }}
       ambiguity_guard: ${{ steps.handoff.outputs.ambiguity_guard }}
       verification_artifact_name: ${{ steps.handoff.outputs.verification_artifact_name }}
@@ -253,14 +256,18 @@ jobs:
             "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
             -o "${root}/trusted-validation.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-repair/repair.py" \
+            -o "${root}/trusted-repair.py"
           test -s "${root}/trusted-recovery.py"
           test -s "${root}/trusted-candidate.py"
           test -s "${root}/trusted-validation.py"
+          test -s "${root}/trusted-repair.py"
 
           profile_file="${root}/validation-profiles.json"
           rm -f "$profile_file"
@@ -323,6 +330,7 @@ jobs:
               echo "mode=fresh"
               echo "run_worker=true"
               echo "source_run_id="
+              echo "worker_repair_round=0"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -603,10 +611,58 @@ jobs:
             fi
           fi
 
+          source_repair_round="$(jq -r '.repair_round // 0' "${root}/recovery-state.json")"
+          worker_repair_round="$source_repair_round"
+          validation_result="$(jq -r '.validation_result // ""' "${root}/recovery-state.json")"
+          if test "$mode" = "recoverable" && test "$validation_result" = "REPAIR"; then
+            worker_repair_round="$(jq -r '.next_repair_round // ""' "${root}/recovery-state.json")"
+          fi
+          if test "$run_worker" = "true"; then
+            case "$worker_repair_round" in
+              0|1|2) ;;
+              *) echo "::error::Recovery produced an invalid Worker repair round." >&2; exit 1 ;;
+            esac
+          fi
+
           export RECOVERY_STATE_FILE="${root}/recovery-state.json"
           export RECOVERY_CONTEXT_FILE="${root}/recovery-context.txt"
           export VERIFY_LOG="${recovery_root}/verify/verification.log"
-          python3 - <<'PY'
+
+          if test "$mode" = "recoverable" && test "$validation_result" = "REPAIR"; then
+            if ! test -s "${recovery_root}/verify/validation-report.json"; then
+              jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="structured_repair_validation_report_missing"' \
+                "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+              mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+              mode="recovery_failed"
+              run_worker="false"
+            else
+              set +e
+              python3 "${root}/trusted-repair.py" context \
+                --issue-json "${root}/issue.json" \
+                --contract-json "${root}/contract.json" \
+                --candidate-manifest "${recovery_root}/candidate/candidate.json" \
+                --validation-report "${recovery_root}/verify/validation-report.json" \
+                --validation-artifact-name "$verify_artifact_name" \
+                --repair-round "$worker_repair_round" \
+                --output "${root}/repair-context.json" \
+                >"${recovery_root}/repair-context.stdout" \
+                2>"${recovery_root}/repair-context.stderr"
+              repair_context_rc="$?"
+              set -e
+              if test "$repair_context_rc" -ne 0; then
+                jq '.mode="recovery_failed" | .run_worker=false | .reuse_candidate=false | .reason="structured_repair_context_build_failed"' \
+                  "${root}/recovery-state.json" > "${root}/recovery-state.tmp"
+                mv "${root}/recovery-state.tmp" "${root}/recovery-state.json"
+                mode="recovery_failed"
+                run_worker="false"
+              else
+                cp "${root}/repair-context.json" "${root}/recovery-context.txt"
+              fi
+            fi
+          fi
+
+          if ! test -s "${root}/recovery-context.txt"; then
+            python3 - <<'PY'
           import json, os
           from pathlib import Path
 
@@ -621,22 +677,23 @@ jobs:
               f"- reason: {state.get('reason')}",
               f"- base strategy: {state.get('base_strategy', 'none')}",
               "",
-              "Trusted prior verification evidence (if present):",
+              "Trusted prior verification evidence (legacy/unclassified compatibility only):",
               verification,
               "",
               "Rules:",
               "- Existing restored code is prior Candidate work. Inspect and continue it; do not discard it merely to restart.",
               "- Prior Worker narrative is not a trusted PASS.",
-              "- If prior verification failed, address that evidence first before repeating unrelated discovery.",
-              "- Contract drift means the old Candidate was NOT restored; implement only the current contract.",
+              "- Structured REPAIR must use the trusted repair-context contract rather than raw-log interpretation.",
           ]
           Path(os.environ["RECOVERY_CONTEXT_FILE"]).write_text("\n".join(text) + "\n")
           PY
+          fi
 
           {
             echo "mode=$mode"
             echo "run_worker=$run_worker"
             echo "source_run_id=$source_run_id"
+            echo "worker_repair_round=$worker_repair_round"
           } >> "$GITHUB_OUTPUT"
 
       - name: Enforce Validation dispatch contract before model execution
@@ -656,7 +713,7 @@ jobs:
 
       - name: Enforce Recovery fail-closed boundary
         id: recovery_gate
-        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' }}
+        if: ${{ steps.recovery.outputs.mode == 'recovery_failed' || steps.recovery.outputs.mode == 'contract_drift' || steps.recovery.outputs.mode == 'escalated' }}
         shell: bash
         env:
           RECOVERY_MODE: ${{ steps.recovery.outputs.mode }}
@@ -868,6 +925,18 @@ jobs:
           actual="$(opencode --version)"
           test "$actual" = "opencode v2.3.0"
 
+      - name: Load trusted shared Worker runtime
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
+        id: worker_runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-worker"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-runtime/run-worker.sh" \
+            -o "$root/trusted-worker-runtime.sh"
+          test -s "$root/trusted-worker-runtime.sh"
+
       - name: Run bounded external Worker
         if: ${{ steps.recovery.outputs.run_worker == 'true' }}
         id: worker
@@ -887,304 +956,10 @@ jobs:
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
           SOFT_BUDGET_MINUTES: ${{ inputs.timeout_minutes }}
+          WORKER_CONTEXT_FILE: ${{ runner.temp }}/mira-worker/recovery-context.txt
         run: |
           set -euo pipefail
-
-          route="${RUNNER_TEMP}/mira-worker/provider-route.json"
-          test -s "$route"
-
-          if test "$FREE_MODE" = "true"; then
-            if test "$PROVIDER" != "opencode" || test -n "${OPENCODE_GO_API_KEY:-}" || test -n "${PROVIDER_API_KEY:-}"; then
-              echo "::error::Free Worker rejects paid credentials or non-native provider." >&2
-              exit 1
-            fi
-            # Preserve official CLI's native free-provider support; disable only credential injection.
-            unset OPENCODE_AUTH_CONTENT OPENCODE_DISABLE_MODELS_FETCH OPENCODE_DISABLE_DEFAULT_PLUGINS
-          else
-            if test "$PROVIDER" = "opencode-go" && test -z "${PROVIDER_API_KEY:-}"; then
-              provider_key="${OPENCODE_GO_API_KEY:-}"
-            else
-              provider_key="${PROVIDER_API_KEY:-}"
-            fi
-            if test -z "$provider_key"; then
-              echo "::error::No credential available for provider '${PROVIDER}'." >&2
-              exit 1
-            fi
-
-            # V2 native provider credential discovery uses provider.env. Do not
-            # serialize the secret into config, CLI arguments, or artifacts.
-            export MIRA_WORKER_PROVIDER_KEY="$provider_key"
-            unset OPENCODE_GO_API_KEY PROVIDER_API_KEY provider_key
-          fi
-
-          # Native V2 configuration: ordered permissions and an optional
-          # provider overlay derived from the already-frozen V1 profile registry.
-          # Do not hand-edit registry profiles or duplicate provider truth.
-          export OPENCODE_CONFIG_CONTENT
-          OPENCODE_CONFIG_CONTENT="$(
-            jq -cn --slurpfile route "$route" --argjson free "$FREE_MODE" --arg provider "$PROVIDER" '
-              {
-                share: "disabled",
-                update: "disable",
-                permissions: [
-                  {action:"read",resource:"*",effect:"allow"},
-                  {action:"read",resource:"*.env*",effect:"deny"},
-                  {action:"glob",resource:"*",effect:"allow"},
-                  {action:"grep",resource:"*",effect:"allow"},
-                  {action:"edit",resource:"*",effect:"allow"},
-                  {action:"skill",resource:"*",effect:(if $free then "deny" else "allow" end)},
-                  {action:"skill",resource:"execute-work-item",effect:"allow"},
-                  {action:"shell",resource:"*",effect:"allow"},
-                  {action:"subagent",resource:"*",effect:"deny"},
-                  {action:"webfetch",resource:"*",effect:"allow"},
-                  {action:"websearch",resource:"*",effect:"allow"},
-                  {action:"external_directory",resource:"*",effect:"deny"},
-                  {action:"execute",resource:"*",effect:"deny"}
-                ]
-              }
-              + (if $free then {}
-                 elif $provider == "opencode-go" then {
-                   providers: {
-                     "opencode-go": {
-                       name: "OpenCode Go",
-                       package: "@opencode/ai/providers/openai-compatible",
-                       env: ["MIRA_WORKER_PROVIDER_KEY"],
-                       settings: {baseURL: "https://opencode.ai/inference/go/openai/v1"},
-                       models: {($route[0].model): {}}
-                     }
-                   }
-                 }
-                 elif (($route[0].provider_config // {}) | length) != 0 then {
-                   providers: (
-                     $route[0].provider_config
-                     | with_entries(.value |= {
-                       name: (.name // null),
-                       package: ("aisdk:" + .npm),
-                       env: ["MIRA_WORKER_PROVIDER_KEY"],
-                       settings: (.options // {}),
-                       models: (.models // {})
-                     })
-                   )
-                 }
-                 else {} end)
-            '
-          )"
-
-          issue_title="$(jq -r '.title' "${RUNNER_TEMP}/mira-worker/issue.json")"
-          issue_body="$(jq -r '.body // ""' "${RUNNER_TEMP}/mira-worker/issue.json")"
-          maintainer_amendments="$(jq -r '
-            if length == 0 then
-              "(none)"
-            else
-              map(
-                "COMMENT #\(.id) by @\(.author) at \(.created_at)\n\(.body)"
-              )
-              | join("\n\n---\n\n")
-            end
-          ' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
-          org_policy="$(cat "${RUNNER_TEMP}/mira-worker/org-AGENTS.md")"
-          recovery_context="$(cat "${RUNNER_TEMP}/mira-worker/recovery-context.txt" 2>/dev/null || printf '%s\n' 'No Recovery context.')"
-
-          cat > "${RUNNER_TEMP}/mira-worker/prompt.txt" <<PROMPT
-          You are the implementation Worker for exactly one explicitly authorized Mira engineering work item.
-
-          Control hierarchy for this run:
-          1. The maintainer authorized implementation of the assigned Issue.
-          2. The current Mira Organization policy below applies.
-          3. The repository root AGENTS.md in the checked-out workspace applies.
-          4. The execute-work-item Skill is installed and MUST be loaded with OpenCode's native skill tool before editing.
-          5. The exact GitHub Issue title/body below is the base work-item contract.
-          6. Trusted maintainer follow-up comments below are chronological follow-up context. A comment is eligible only when its author is a human account with current repository write, maintain, or admin permission; bot and ordinary-user comments are excluded. Only an eligible comment that explicitly clarifies, revises, returns, narrows, or otherwise changes the work item acts as a contract amendment. Status/evidence/conversational comments do not change the contract. When explicit amendments conflict, later trusted amendments override earlier trusted amendments and the conflicting part of the base Issue contract. The loaded execute-work-item Skill defines the full amendment semantics; apply it.
-
-          Immutable execution identity:
-          - repository: ${GITHUB_REPOSITORY}
-          - issue: #${ISSUE_NUMBER}
-          - delivery base: ${BASE_BRANCH}
-          - base SHA: ${BASE_SHA}
-
-          Advisory work budget: ${SOFT_BUDGET_MINUTES} minutes. This is a planning checkpoint, NOT a hard deadline. Do not stop, abandon, or discard useful work merely because this budget has elapsed. Continue when the task needs more time. If a handoff is necessary, leave a coherent implementation checkpoint and an exact account of remaining work. The GitHub-hosted runner's platform execution ceiling is external and cannot be extended by this workflow.
-
-          Important execution constraints:
-          - Work only on this Issue.
-          - Only supplied eligible trusted maintainer follow-up comments (human authors with current repository write, maintain, or admin permission) can amend the Issue contract, and only when their wording explicitly changes or clarifies the work item. Ordinary acknowledgements, status notes, evidence chatter, or conversational comments do not amend it.
-          - Other Issue comments are deliberately excluded and have no authority in this run.
-          - Explicit trusted amendments can change implementation scope/acceptance within this Issue, but they do not expand this Worker's authority to merge, close/reopen Issues, release, deploy, or promote environments.
-          - Read repository AGENTS.md before editing.
-          - Load execute-work-item before editing.
-          - Repository read/search/edit/write and shell/terminal are allowed on this ephemeral GitHub-hosted runner for inspecting the code, installing dependencies, running tests/builds, and local debugging. Record commands and results truthfully.
-          - Shell/network permission is not authority to push, create/merge PRs, modify unrelated repository or workflow files, deploy, or change secrets. Do not read, log, transmit, or persist credentials/tokens from environment or configuration, including via outbound network requests. Trusted post-run verification and GitHub delivery steps remain authoritative.
-          - Web fetch/search and ordinary internet requests are allowed for project documentation, dependencies, research, and implementation. No artificial request-count or usage quota is imposed by this Worker workflow; external service limits, provider availability, and GitHub-hosted runner limits still apply.
-          - Subagents and GitHub mutations are unavailable to the Worker as dedicated tools.
-          - Do not create commits, branches, pull requests, Issues, releases, or environment promotions.
-          - You may run tests, builds, and diagnostics in the Worker runner and report their exact results. The separate trusted post-run verification is still required; your own passing tests do not replace it.
-          - If the Issue cannot be implemented safely without a maintainer decision or broader scope, make no speculative workaround and report the blocker.
-          - Make the smallest coherent change that satisfies the Issue contract.
-          - Never route the native free Worker to paid models or custom provider endpoints.
-          - End with a concise handoff listing changed surfaces, reasoning, and any validation gap.
-
-          CURRENT_MIRA_ORGANIZATION_POLICY
-          ${org_policy}
-
-          ASSIGNED_ISSUE_BASE_CONTRACT
-          Title: ${issue_title}
-
-          ${issue_body}
-
-          TRUSTED_MAINTAINER_FOLLOW_UP
-          ${maintainer_amendments}
-
-          CANDIDATE_RECOVERY_CONTEXT
-          ${recovery_context}
-          PROMPT
-
-          opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-before.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-before.json"
-
-          set +e
-          opencode run             --model "$MODEL_ROUTE"             --agent build             --title "Mira external Worker #${ISSUE_NUMBER}"             "$(cat "${RUNNER_TEMP}/mira-worker/prompt.txt")"             2>&1 | tee "${RUNNER_TEMP}/mira-worker/worker-output.raw"
-          worker_rc="${PIPESTATUS[0]}"
-          set -e
-
-          python3 - <<'PY'
-          from pathlib import Path
-          root = Path(__import__("os").environ["RUNNER_TEMP"]) / "mira-worker"
-          src = root / "worker-output.raw"
-          dst = root / "worker-output.txt"
-          limit = 120_000
-          data = src.read_bytes() if src.exists() else b""
-          truncated = len(data) > limit
-          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
-          (root / "worker-output-meta.json").write_text(
-              __import__("json").dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n"
-          )
-          PY
-
-          opencode session list --max-count 50 --format json > "${RUNNER_TEMP}/mira-worker/sessions-after.json" 2>/dev/null || printf '[]\n' > "${RUNNER_TEMP}/mira-worker/sessions-after.json"
-
-          export OPENCODE_SESSION_ID
-          OPENCODE_SESSION_ID="$(python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
-
-          def ids(path):
-              try:
-                  value = json.loads(path.read_text())
-              except Exception:
-                  return []
-              if isinstance(value, dict):
-                  value = value.get("sessions", value.get("data", []))
-              if not isinstance(value, list):
-                  return []
-              out = []
-              for item in value:
-                  if not isinstance(item, dict):
-                      continue
-                  sid = item.get("id") or item.get("sessionID") or item.get("session_id")
-                  if isinstance(sid, str):
-                      out.append(sid)
-              return out
-
-          before = set(ids(root / "sessions-before.json"))
-          after = ids(root / "sessions-after.json")
-          fresh = [sid for sid in after if sid not in before]
-          print((fresh or after or [""])[0])
-          PY
-          )"
-
-          if test -n "$OPENCODE_SESSION_ID"; then
-            if opencode export "$OPENCODE_SESSION_ID" --sanitize > "${RUNNER_TEMP}/mira-worker/session-export.json" 2>/dev/null \
-              || opencode session export "$OPENCODE_SESSION_ID" --sanitize > "${RUNNER_TEMP}/mira-worker/session-export.json" 2>/dev/null; then
-              python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-worker"
-          src = root / "session-export.json"
-          out = root / "trajectory.jsonl"
-          summary = root / "session-summary.json"
-          limit_events = 500
-
-          try:
-              data = json.loads(src.read_text(errors="replace"))
-          except Exception as exc:
-              summary.write_text(json.dumps({"available": False, "error": type(exc).__name__}) + "\n")
-              out.write_text("")
-              raise SystemExit(0)
-
-          session = data.get("info", {}) if isinstance(data, dict) else {}
-          messages = data.get("messages", []) if isinstance(data, dict) else []
-          if not isinstance(messages, list):
-              messages = []
-
-          events = []
-          for msg in messages:
-              if not isinstance(msg, dict):
-                  continue
-              info = msg.get("info", msg)
-              if not isinstance(info, dict):
-                  info = {}
-              mid = info.get("id")
-              sid = info.get("sessionID") or session.get("id")
-              role = info.get("role")
-              parts = msg.get("parts", info.get("parts", []))
-              if not isinstance(parts, list):
-                  parts = []
-              for part in parts:
-                  if not isinstance(part, dict):
-                      continue
-                  kind = part.get("type")
-                  if kind == "tool":
-                      state = part.get("state", {})
-                      if not isinstance(state, dict):
-                          state = {}
-                      timing = state.get("time", {})
-                      if not isinstance(timing, dict):
-                          timing = {}
-                      events.append({
-                          "kind": "tool",
-                          "session_id": sid,
-                          "message_id": mid,
-                          "role": role,
-                          "tool": part.get("tool") or part.get("toolName"),
-                          "call_id": part.get("callID") or part.get("toolCallId"),
-                          "status": state.get("status") or part.get("state"),
-                          "started_at": timing.get("start"),
-                          "ended_at": timing.get("end"),
-                      })
-                  elif kind in {"step-start", "step-finish", "patch", "retry", "compaction", "subtask"}:
-                      events.append({
-                          "kind": kind,
-                          "session_id": sid,
-                          "message_id": mid,
-                          "role": role,
-                      })
-
-          truncated = len(events) > limit_events
-          events = events[:limit_events]
-          with out.open("w") as fh:
-              for event in events:
-                  fh.write(json.dumps(event, separators=(",", ":")) + "\n")
-
-          summary.write_text(json.dumps({
-              "available": True,
-              "session_id": session.get("id") or os.environ.get("OPENCODE_SESSION_ID"),
-              "event_count": len(events),
-              "event_limit": limit_events,
-              "truncated": truncated,
-              "content_policy": "metadata-only; prompt/text/reasoning/tool inputs/tool outputs omitted",
-          }, separators=(",", ":")) + "\n")
-          PY
-              rm -f "${RUNNER_TEMP}/mira-worker/session-export.json"
-            else
-              printf '{"available":false,"reason":"sanitized_export_unavailable"}\n' > "${RUNNER_TEMP}/mira-worker/session-summary.json"
-              : > "${RUNNER_TEMP}/mira-worker/trajectory.jsonl"
-            fi
-          else
-            printf '{"available":false,"reason":"session_id_unresolved"}\n' > "${RUNNER_TEMP}/mira-worker/session-summary.json"
-            : > "${RUNNER_TEMP}/mira-worker/trajectory.jsonl"
-          fi
-
-          exit "$worker_rc"
+          bash "${RUNNER_TEMP}/mira-worker/trusted-worker-runtime.sh"
 
       - name: Capture durable Candidate
         id: candidate
@@ -1201,6 +976,7 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           BASE_SHA: ${{ steps.identity.outputs.base_sha }}
+          REPAIR_ROUND: ${{ steps.recovery.outputs.worker_repair_round }}
           PROVIDER: ${{ steps.provider.outputs.provider }}
           MODEL: ${{ steps.provider.outputs.model }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
@@ -1209,10 +985,10 @@ jobs:
 
           root="${RUNNER_TEMP}/mira-worker"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
           test -s "${root}/trusted-candidate.py"
-          echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${root}/identity.txt"
+          echo "candidate_tool_commit=${{ job.workflow_sha }}" >> "${root}/identity.txt"
 
           candidate_dir="${root}/candidate"
           status_file="${root}/candidate-status.json"
@@ -1250,6 +1026,7 @@ jobs:
             --issue-number "$ISSUE_NUMBER" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --repair-round "$REPAIR_ROUND" \
             --base-branch "$BASE_BRANCH" \
             --base-sha "$BASE_SHA" \
             --contract-fingerprint "$CONTRACT_FINGERPRINT" \
@@ -1285,6 +1062,7 @@ jobs:
                       "candidate_patch_sha256": manifest.get("candidate_patch_sha256"),
                       "candidate_patch_bytes": manifest.get("candidate_patch_bytes"),
                       "candidate_tree_oid": manifest.get("candidate_tree_oid"),
+                      "repair_round": manifest.get("repair_round", 0),
                       "worker_outcome": manifest.get("worker_outcome"),
                       "provider": manifest.get("provider"),
                       "model": manifest.get("model"),
@@ -1544,6 +1322,20 @@ jobs:
               echo "model=${NORMAL_MODEL:-}"
             } >> "$GITHUB_OUTPUT"
           fi
+
+          candidate_repair_round=0
+          if test "$mode" = "delivery_retry_only" || test "$mode" = "delivery_complete"; then
+            if test -s "$root/recovery/candidate/candidate.json"; then
+              candidate_repair_round="$(jq -r '.repair_round // 0' "$root/recovery/candidate/candidate.json")"
+            fi
+          elif test -s "$root/candidate/candidate.json"; then
+            candidate_repair_round="$(jq -r '.repair_round // 0' "$root/candidate/candidate.json")"
+          fi
+          case "$candidate_repair_round" in
+            0|1|2) ;;
+            *) echo "::error::Invalid Candidate repair round in handoff." >&2; exit 1 ;;
+          esac
+          echo "candidate_repair_round=$candidate_repair_round" >> "$GITHUB_OUTPUT"
 
       - name: Finalize Worker/Capture evidence
         id: worker_evidence
@@ -1869,7 +1661,7 @@ jobs:
           root="${RUNNER_TEMP}/mira-verify"
           mkdir -p "$root"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "$root/trusted-candidate.py"
           test -s "$root/trusted-candidate.py"
 
@@ -1899,6 +1691,7 @@ jobs:
         env:
           EXPECTED_REPOSITORY: ${{ github.repository }}
           EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_REPAIR_ROUND: ${{ needs.worker_capture.outputs.candidate_repair_round }}
           EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
@@ -1913,6 +1706,7 @@ jobs:
             --candidate-dir "$candidate_dir" \
             --expected-repository "$EXPECTED_REPOSITORY" \
             --expected-issue-number "$EXPECTED_ISSUE_NUMBER" \
+            --expected-repair-round "$EXPECTED_REPAIR_ROUND" \
             --expected-base-sha "$EXPECTED_BASE_SHA" \
             --expected-contract-fingerprint "$EXPECTED_CONTRACT_FINGERPRINT" \
             | tee "$root/restore-result.json"
@@ -1983,6 +1777,7 @@ jobs:
           EXPECTED_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
           EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          REPAIR_ROUND: ${{ needs.worker_capture.outputs.candidate_repair_round }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           VALIDATION_STEP_OUTCOME: ${{ steps.validation.outcome }}
           REQUESTED_PROFILE: ${{ inputs.validation_profile }}
@@ -2044,6 +1839,7 @@ jobs:
               "repository": os.getenv("GITHUB_REPOSITORY"),
               "run_id": os.getenv("GITHUB_RUN_ID"),
               "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
+              "repair_round": int(os.getenv("REPAIR_ROUND") or "0"),
               "base_sha": os.getenv("BASE_SHA"),
               "candidate_patch_sha256": os.getenv("EXPECTED_PATCH_SHA256"),
               "candidate_tree_oid": os.getenv("EXPECTED_TREE_OID"),
@@ -2087,22 +1883,276 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Require verified Candidate
+      - name: Require trustworthy Validation evidence
         if: always()
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          VALIDATION_STEP_OUTCOME: ${{ steps.validation.outcome }}
           VALIDATION_RESULT: ${{ steps.verify_meta.outputs.validation_result }}
         run: |
           set -euo pipefail
           test "$RESTORE_OUTCOME" = "success"
-          test "$VALIDATION_RESULT" = "PASS"
+          test "$VALIDATION_STEP_OUTCOME" = "success"
+          case "$VALIDATION_RESULT" in
+            PASS|REPAIR|BLOCKED|VALIDATION_GAP) ;;
+            *) exit 1 ;;
+          esac
+
+  initial_repair_outcome:
+    needs:
+      - worker_capture
+      - verify
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.decision.outputs.state }}
+      next_repair_round: ${{ steps.decision.outputs.next_repair_round }}
+    steps:
+      - name: Load trusted bounded repair state helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-repair/repair.py" \
+            -o "${RUNNER_TEMP}/trusted-repair.py"
+          test -s "${RUNNER_TEMP}/trusted-repair.py"
+
+      - name: Classify initial Validation outcome
+        id: decision
+        shell: bash
+        env:
+          VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
+          COMPLETED_REPAIR_ROUNDS: ${{ needs.worker_capture.outputs.candidate_repair_round }}
+        run: |
+          set -euo pipefail
+          python3 "${RUNNER_TEMP}/trusted-repair.py" decide \
+            --validation-result "$VALIDATION_RESULT" \
+            --completed-rounds "$COMPLETED_REPAIR_ROUNDS" \
+            --output "${RUNNER_TEMP}/repair-outcome.json"
+          echo "state=$(jq -r '.state' "${RUNNER_TEMP}/repair-outcome.json")" >> "$GITHUB_OUTPUT"
+          echo "next_repair_round=$(jq -r '.next_repair_round // ""' "${RUNNER_TEMP}/repair-outcome.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload initial repair decision
+        uses: actions/upload-artifact@v4
+        with:
+          name: mira-external-worker-repair-outcome-${{ github.run_id }}-${{ github.run_attempt }}-initial
+          path: ${{ runner.temp }}/repair-outcome.json
+          if-no-files-found: error
+          retention-days: 14
+
+  repair_round_1:
+    needs:
+      - worker_capture
+      - verify
+      - initial_repair_outcome
+    if: ${{ always() && needs.initial_repair_outcome.outputs.state == 'RETURNED' }}
+    uses: ./.github/workflows/mira-external-worker-repair.yml
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      base_branch: ${{ inputs.base_branch }}
+      base_sha: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+      contract_fingerprint: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+      source_candidate_artifact_name: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+      source_validation_artifact_name: ${{ needs.verify.outputs.verification_artifact_name }}
+      initial_worker_handoff_artifact_name: mira-external-worker-${{ github.run_id }}
+      verification_command: ${{ inputs.verification_command }}
+      validation_profile: ${{ inputs.validation_profile }}
+      validation_max_tier: ${{ inputs.validation_max_tier }}
+      timeout_minutes: ${{ inputs.timeout_minutes }}
+      free_mode: ${{ inputs.free_mode }}
+      repair_round: ${{ fromJSON(needs.initial_repair_outcome.outputs.next_repair_round) }}
+    secrets:
+      opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
+      provider_api_key: ${{ secrets.provider_api_key }}
+
+  repair_round_2:
+    needs:
+      - worker_capture
+      - repair_round_1
+    if: ${{ always() && needs.repair_round_1.outputs.state == 'RETURNED' }}
+    uses: ./.github/workflows/mira-external-worker-repair.yml
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      base_branch: ${{ inputs.base_branch }}
+      base_sha: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+      contract_fingerprint: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+      source_candidate_artifact_name: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
+      source_validation_artifact_name: ${{ needs.repair_round_1.outputs.verification_artifact_name }}
+      initial_worker_handoff_artifact_name: mira-external-worker-${{ github.run_id }}
+      verification_command: ${{ inputs.verification_command }}
+      validation_profile: ${{ inputs.validation_profile }}
+      validation_max_tier: ${{ inputs.validation_max_tier }}
+      timeout_minutes: ${{ inputs.timeout_minutes }}
+      free_mode: ${{ inputs.free_mode }}
+      repair_round: ${{ fromJSON(needs.repair_round_1.outputs.next_repair_round) }}
+    secrets:
+      opencode_go_api_key: ${{ secrets.opencode_go_api_key }}
+      provider_api_key: ${{ secrets.provider_api_key }}
+
+  lifecycle_handoff:
+    needs:
+      - worker_capture
+      - verify
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+    if: ${{ always() && needs.worker_capture.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: none
+    outputs:
+      state: ${{ steps.select.outputs.state }}
+      repair_round: ${{ steps.select.outputs.repair_round }}
+      candidate_artifact_name: ${{ steps.select.outputs.candidate_artifact_name }}
+      candidate_artifact_id: ${{ steps.select.outputs.candidate_artifact_id }}
+      candidate_artifact_digest: ${{ steps.select.outputs.candidate_artifact_digest }}
+      candidate_patch_sha256: ${{ steps.select.outputs.candidate_patch_sha256 }}
+      candidate_tree_oid: ${{ steps.select.outputs.candidate_tree_oid }}
+      worker_handoff_artifact_name: ${{ steps.select.outputs.worker_handoff_artifact_name }}
+      verification_artifact_name: ${{ steps.select.outputs.verification_artifact_name }}
+      verification_terminal_status: ${{ steps.select.outputs.verification_terminal_status }}
+      validation_result: ${{ steps.select.outputs.validation_result }}
+    steps:
+      - name: Select current Candidate generation exactly once
+        id: select
+        shell: bash
+        env:
+          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
+          INITIAL_STATE: ${{ needs.initial_repair_outcome.outputs.state }}
+          INITIAL_REPAIR_ROUND: ${{ needs.worker_capture.outputs.candidate_repair_round }}
+          INITIAL_CANDIDATE: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          INITIAL_CANDIDATE_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
+          INITIAL_CANDIDATE_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
+          INITIAL_PATCH: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
+          INITIAL_TREE: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          INITIAL_VERIFY: ${{ needs.verify.outputs.verification_artifact_name }}
+          INITIAL_VERIFY_STATUS: ${{ needs.verify.outputs.terminal_status }}
+          INITIAL_VALIDATION_RESULT: ${{ needs.verify.outputs.validation_result }}
+          R1_STATE: ${{ needs.repair_round_1.outputs.state }}
+          R1_REPAIR_ROUND: ${{ needs.repair_round_1.outputs.repair_round }}
+          R1_CANDIDATE: ${{ needs.repair_round_1.outputs.candidate_artifact_name }}
+          R1_CANDIDATE_ID: ${{ needs.repair_round_1.outputs.candidate_artifact_id }}
+          R1_CANDIDATE_DIGEST: ${{ needs.repair_round_1.outputs.candidate_artifact_digest }}
+          R1_PATCH: ${{ needs.repair_round_1.outputs.candidate_patch_sha256 }}
+          R1_TREE: ${{ needs.repair_round_1.outputs.candidate_tree_oid }}
+          R1_WORKER_HANDOFF: ${{ needs.repair_round_1.outputs.worker_handoff_artifact_name }}
+          R1_VERIFY: ${{ needs.repair_round_1.outputs.verification_artifact_name }}
+          R1_VERIFY_STATUS: ${{ needs.repair_round_1.outputs.verification_terminal_status }}
+          R1_VALIDATION_RESULT: ${{ needs.repair_round_1.outputs.validation_result }}
+          R2_STATE: ${{ needs.repair_round_2.outputs.state }}
+          R2_REPAIR_ROUND: ${{ needs.repair_round_2.outputs.repair_round }}
+          R2_CANDIDATE: ${{ needs.repair_round_2.outputs.candidate_artifact_name }}
+          R2_CANDIDATE_ID: ${{ needs.repair_round_2.outputs.candidate_artifact_id }}
+          R2_CANDIDATE_DIGEST: ${{ needs.repair_round_2.outputs.candidate_artifact_digest }}
+          R2_PATCH: ${{ needs.repair_round_2.outputs.candidate_patch_sha256 }}
+          R2_TREE: ${{ needs.repair_round_2.outputs.candidate_tree_oid }}
+          R2_WORKER_HANDOFF: ${{ needs.repair_round_2.outputs.worker_handoff_artifact_name }}
+          R2_VERIFY: ${{ needs.repair_round_2.outputs.verification_artifact_name }}
+          R2_VERIFY_STATUS: ${{ needs.repair_round_2.outputs.verification_terminal_status }}
+          R2_VALIDATION_RESULT: ${{ needs.repair_round_2.outputs.validation_result }}
+          RECOVERED_VERIFY: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+        run: |
+          set -euo pipefail
+          state=""
+          repair_round="${INITIAL_REPAIR_ROUND:-0}"
+          candidate="$INITIAL_CANDIDATE"
+          candidate_id="$INITIAL_CANDIDATE_ID"
+          candidate_digest="$INITIAL_CANDIDATE_DIGEST"
+          patch="$INITIAL_PATCH"
+          tree="$INITIAL_TREE"
+          worker_handoff="mira-external-worker-${GITHUB_RUN_ID}"
+          verify="$INITIAL_VERIFY"
+          verify_status="$INITIAL_VERIFY_STATUS"
+          validation_result="$INITIAL_VALIDATION_RESULT"
+
+          if test "$RECOVERY_MODE" = "delivery_complete"; then
+            state="DELIVERED"
+            verify="$RECOVERED_VERIFY"
+            verify_status="success"
+            validation_result="PASS"
+          elif test "$RECOVERY_MODE" = "delivery_retry_only"; then
+            state="VERIFIED"
+            verify="$RECOVERED_VERIFY"
+            verify_status="success"
+            validation_result="PASS"
+          else
+            state="$INITIAL_STATE"
+
+            # A failed repair attempt must never erase the last durable Candidate.
+            # Advance the selected generation only after a new Candidate Artifact exists.
+            if test -n "$R1_STATE"; then
+              state="$R1_STATE"
+              validation_result="${R1_VALIDATION_RESULT:-$validation_result}"
+              if test -n "$R1_CANDIDATE_ID"; then
+                repair_round="$R1_REPAIR_ROUND"
+                candidate="$R1_CANDIDATE"
+                candidate_id="$R1_CANDIDATE_ID"
+                candidate_digest="$R1_CANDIDATE_DIGEST"
+                patch="$R1_PATCH"
+                tree="$R1_TREE"
+                worker_handoff="$R1_WORKER_HANDOFF"
+                verify="$R1_VERIFY"
+                verify_status="$R1_VERIFY_STATUS"
+              fi
+            fi
+
+            if test -n "$R2_STATE"; then
+              state="$R2_STATE"
+              validation_result="${R2_VALIDATION_RESULT:-$validation_result}"
+              if test -n "$R2_CANDIDATE_ID"; then
+                repair_round="$R2_REPAIR_ROUND"
+                candidate="$R2_CANDIDATE"
+                candidate_id="$R2_CANDIDATE_ID"
+                candidate_digest="$R2_CANDIDATE_DIGEST"
+                patch="$R2_PATCH"
+                tree="$R2_TREE"
+                worker_handoff="$R2_WORKER_HANDOFF"
+                verify="$R2_VERIFY"
+                verify_status="$R2_VERIFY_STATUS"
+              fi
+            fi
+          fi
+
+          case "$state" in
+            VERIFIED|BLOCKED|ESCALATED|DELIVERED) ;;
+            *) echo "::error::No terminal lifecycle state is available: '${state}'." >&2; exit 1 ;;
+          esac
+          case "$repair_round" in
+            0|1|2) ;;
+            *) echo "::error::Invalid lifecycle Candidate repair round." >&2; exit 1 ;;
+          esac
+          test -n "$candidate"
+          test -n "$candidate_id"
+          test -n "$candidate_digest"
+          test -n "$patch"
+          test -n "$tree"
+          test -n "$worker_handoff"
+          {
+            echo "state=$state"
+            echo "repair_round=$repair_round"
+            echo "candidate_artifact_name=$candidate"
+            echo "candidate_artifact_id=$candidate_id"
+            echo "candidate_artifact_digest=$candidate_digest"
+            echo "candidate_patch_sha256=$patch"
+            echo "candidate_tree_oid=$tree"
+            echo "worker_handoff_artifact_name=$worker_handoff"
+            echo "verification_artifact_name=$verify"
+            echo "verification_terminal_status=$verify_status"
+            echo "validation_result=$validation_result"
+          } >> "$GITHUB_OUTPUT"
 
   delivery:
     needs:
       - worker_capture
       - verify
-    if: ${{ always() && needs.worker_capture.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && ((needs.verify.result == 'success' && needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only') || needs.worker_capture.outputs.recovery_mode == 'delivery_retry_only') }}
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+      - lifecycle_handoff
+    if: ${{ always() && needs.worker_capture.result == 'success' && needs.lifecycle_handoff.result == 'success' && needs.lifecycle_handoff.outputs.state == 'VERIFIED' }}
     permissions:
       contents: write
       issues: none
@@ -2118,37 +2168,30 @@ jobs:
         id: verified_handoff
         shell: bash
         env:
-          RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
-          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
-          NORMAL_PATCH: ${{ needs.verify.outputs.candidate_patch_sha256 }}
-          NORMAL_TREE: ${{ needs.verify.outputs.candidate_tree_oid }}
-          NORMAL_CONTRACT: ${{ needs.verify.outputs.contract_fingerprint }}
-          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
-          RECOVERED_PATCH: ${{ needs.worker_capture.outputs.verified_patch_sha256 }}
-          RECOVERED_TREE: ${{ needs.worker_capture.outputs.verified_tree_oid }}
-          RECOVERED_CONTRACT: ${{ needs.worker_capture.outputs.verified_contract_fingerprint }}
+          CANDIDATE: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_name }}
+          WORKER_HANDOFF: ${{ needs.lifecycle_handoff.outputs.worker_handoff_artifact_name }}
+          VERIFY: ${{ needs.lifecycle_handoff.outputs.verification_artifact_name }}
+          PATCH: ${{ needs.lifecycle_handoff.outputs.candidate_patch_sha256 }}
+          TREE: ${{ needs.lifecycle_handoff.outputs.candidate_tree_oid }}
+          REPAIR_ROUND: ${{ needs.lifecycle_handoff.outputs.repair_round }}
+          CONTRACT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
         run: |
           set -euo pipefail
-          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
-            artifact="$RECOVERED_VERIFY_ARTIFACT"
-            patch="$RECOVERED_PATCH"
-            tree="$RECOVERED_TREE"
-            contract="$RECOVERED_CONTRACT"
-          else
-            artifact="$NORMAL_VERIFY_ARTIFACT"
-            patch="$NORMAL_PATCH"
-            tree="$NORMAL_TREE"
-            contract="$NORMAL_CONTRACT"
-          fi
-          test -n "$artifact"
-          test -n "$patch"
-          test -n "$tree"
-          test -n "$contract"
+          test -n "$CANDIDATE"
+          test -n "$WORKER_HANDOFF"
+          test -n "$VERIFY"
+          test -n "$PATCH"
+          test -n "$TREE"
+          test -n "$REPAIR_ROUND"
+          test -n "$CONTRACT"
           {
-            echo "verification_artifact_name=$artifact"
-            echo "candidate_patch_sha256=$patch"
-            echo "candidate_tree_oid=$tree"
-            echo "contract_fingerprint=$contract"
+            echo "candidate_artifact_name=$CANDIDATE"
+            echo "worker_handoff_artifact_name=$WORKER_HANDOFF"
+            echo "verification_artifact_name=$VERIFY"
+            echo "candidate_patch_sha256=$PATCH"
+            echo "candidate_tree_oid=$TREE"
+            echo "contract_fingerprint=$CONTRACT"
+            echo "repair_round=$REPAIR_ROUND"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact verified Candidate base
@@ -2163,14 +2206,14 @@ jobs:
         id: candidate_download
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
+          name: ${{ steps.verified_handoff.outputs.candidate_artifact_name }}
           path: ${{ runner.temp }}/mira-delivery/candidate
 
       - name: Download Worker/Capture handoff
         id: worker_handoff
         uses: actions/download-artifact@v4
         with:
-          name: mira-external-worker-${{ github.run_id }}
+          name: ${{ steps.verified_handoff.outputs.worker_handoff_artifact_name }}
           path: ${{ runner.temp }}/mira-delivery/worker
 
       - name: Download Verify evidence
@@ -2187,7 +2230,7 @@ jobs:
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-delivery"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "$root/trusted-candidate.py"
           test -s "$root/trusted-candidate.py"
 
@@ -2199,6 +2242,7 @@ jobs:
           EXPECTED_ISSUE_NUMBER: ${{ inputs.issue_number }}
           EXPECTED_BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
+          EXPECTED_REPAIR_ROUND: ${{ steps.verified_handoff.outputs.repair_round }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
         run: |
           set -euo pipefail
@@ -2210,6 +2254,7 @@ jobs:
             --candidate-dir "$root/candidate" \
             --expected-repository "$EXPECTED_REPOSITORY" \
             --expected-issue-number "$EXPECTED_ISSUE_NUMBER" \
+            --expected-repair-round "$EXPECTED_REPAIR_ROUND" \
             --expected-base-sha "$EXPECTED_BASE_SHA" \
             --expected-contract-fingerprint "$EXPECTED_CONTRACT_FINGERPRINT" \
             | tee "$root/restore-result.json"
@@ -2218,8 +2263,8 @@ jobs:
         id: identity
         shell: bash
         env:
-          WORKER_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
-          WORKER_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          WORKER_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
+          WORKER_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           VERIFY_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
           VERIFY_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
           VERIFY_CONTRACT_FINGERPRINT: ${{ steps.verified_handoff.outputs.contract_fingerprint }}
@@ -2498,8 +2543,12 @@ jobs:
     needs:
       - worker_capture
       - verify
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+      - lifecycle_handoff
       - delivery
-    if: ${{ always() && needs.worker_capture.outputs.recovery_mode != 'delivery_complete' && needs.worker_capture.outputs.candidate_artifact_name != '' && needs.worker_capture.outputs.candidate_artifact_id != '' && (needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' || (needs.worker_capture.outputs.recovered_candidate_upload_outcome == 'success' && needs.worker_capture.outputs.recovered_verify_upload_outcome == 'success')) }}
+    if: ${{ always() && needs.lifecycle_handoff.result == 'success' && needs.lifecycle_handoff.outputs.state != 'DELIVERED' && needs.lifecycle_handoff.outputs.candidate_artifact_name != '' && needs.lifecycle_handoff.outputs.candidate_artifact_id != '' && (needs.worker_capture.outputs.recovery_mode != 'delivery_retry_only' || (needs.worker_capture.outputs.recovered_candidate_upload_outcome == 'success' && needs.worker_capture.outputs.recovered_verify_upload_outcome == 'success')) }}
     permissions:
       contents: none
       issues: write
@@ -2515,16 +2564,19 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           RECOVERY_MODE: ${{ needs.worker_capture.outputs.recovery_mode }}
           RECOVERY_SOURCE_RUN_ID: ${{ needs.worker_capture.outputs.recovery_source_run_id }}
+          LIFECYCLE_STATE: ${{ needs.lifecycle_handoff.outputs.state }}
+          REPAIR_ROUND: ${{ needs.lifecycle_handoff.outputs.repair_round }}
+          VALIDATION_RESULT: ${{ needs.lifecycle_handoff.outputs.validation_result }}
           BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
           BASE_BRANCH: ${{ needs.worker_capture.outputs.candidate_base_branch }}
           WORKER_BRANCH: ${{ needs.worker_capture.outputs.worker_branch }}
           CANDIDATE_ORIGIN_RUN_ID: ${{ needs.worker_capture.outputs.candidate_origin_run_id }}
           CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ needs.worker_capture.outputs.candidate_origin_run_attempt }}
-          CANDIDATE_ARTIFACT_NAME: ${{ needs.worker_capture.outputs.candidate_artifact_name }}
-          CANDIDATE_ARTIFACT_ID: ${{ needs.worker_capture.outputs.candidate_artifact_id }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.worker_capture.outputs.candidate_artifact_digest }}
-          CANDIDATE_PATCH_SHA256: ${{ needs.worker_capture.outputs.candidate_patch_sha256 }}
-          CANDIDATE_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
+          CANDIDATE_ARTIFACT_NAME: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_name }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.lifecycle_handoff.outputs.candidate_artifact_digest }}
+          CANDIDATE_PATCH_SHA256: ${{ needs.lifecycle_handoff.outputs.candidate_patch_sha256 }}
+          CANDIDATE_TREE_OID: ${{ needs.lifecycle_handoff.outputs.candidate_tree_oid }}
           CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           AMBIGUITY_GUARD: ${{ needs.worker_capture.outputs.ambiguity_guard }}
           PROVIDER: ${{ needs.worker_capture.outputs.provider }}
@@ -2532,10 +2584,8 @@ jobs:
           PROVIDER_REGISTRY_REF: ${{ needs.worker_capture.outputs.provider_registry_ref }}
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           MODEL: ${{ needs.worker_capture.outputs.model }}
-          NORMAL_VERIFY_RESULT: ${{ needs.verify.outputs.terminal_status }}
-          NORMAL_VERIFY_JOB_RESULT: ${{ needs.verify.result }}
-          NORMAL_VERIFY_ARTIFACT: ${{ needs.verify.outputs.verification_artifact_name }}
-          RECOVERED_VERIFY_ARTIFACT: ${{ needs.worker_capture.outputs.verification_artifact_name }}
+          VERIFY_RESULT: ${{ needs.lifecycle_handoff.outputs.verification_terminal_status }}
+          VERIFY_ARTIFACT: ${{ needs.lifecycle_handoff.outputs.verification_artifact_name }}
           DELIVERY_RESULT: ${{ needs.delivery.outputs.terminal_status }}
           DELIVERY_JOB_RESULT: ${{ needs.delivery.result }}
           DELIVERY_ARTIFACT: ${{ needs.delivery.outputs.delivery_artifact_name }}
@@ -2543,19 +2593,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          if test "$RECOVERY_MODE" = "delivery_retry_only"; then
-            verify_state="success"
-            verify_artifact="$RECOVERED_VERIFY_ARTIFACT"
-          else
-            if test "${NORMAL_VERIFY_RESULT:-}" = "success" || test "${NORMAL_VERIFY_RESULT:-}" = "failure"; then
-              verify_state="$NORMAL_VERIFY_RESULT"
-            elif test "$NORMAL_VERIFY_JOB_RESULT" = "skipped"; then
-              verify_state="skipped"
-            else
-              verify_state="failure"
-            fi
-            verify_artifact="${NORMAL_VERIFY_ARTIFACT:-}"
-          fi
+          case "${VERIFY_RESULT:-}" in
+            success|failure) verify_state="$VERIFY_RESULT" ;;
+            *) verify_state="skipped" ;;
+          esac
+          verify_artifact="${VERIFY_ARTIFACT:-}"
 
           if test "${DELIVERY_RESULT:-}" = "success" || test "${DELIVERY_RESULT:-}" = "failure"; then
             delivery_state="$DELIVERY_RESULT"
@@ -2565,6 +2607,15 @@ jobs:
             delivery_state="failure"
           fi
 
+          case "$REPAIR_ROUND" in
+            0|1|2) ;;
+            *) echo "::error::Invalid Recovery pointer repair round." >&2; exit 1 ;;
+          esac
+          case "$LIFECYCLE_STATE" in
+            VERIFIED|BLOCKED|ESCALATED) ;;
+            *) echo "::error::Invalid Recovery lifecycle state." >&2; exit 1 ;;
+          esac
+
           export POINTER_JSON
           POINTER_JSON="$(jq -cn \
             --arg repository "$GITHUB_REPOSITORY" \
@@ -2573,6 +2624,9 @@ jobs:
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg recovery_mode "$RECOVERY_MODE" \
             --arg recovery_source_run_id "$RECOVERY_SOURCE_RUN_ID" \
+            --arg lifecycle_state "$LIFECYCLE_STATE" \
+            --arg repair_round "$REPAIR_ROUND" \
+            --arg validation_result "$VALIDATION_RESULT" \
             --arg base_sha "$BASE_SHA" \
             --arg base_branch "$BASE_BRANCH" \
             --arg worker_branch "$WORKER_BRANCH" \
@@ -2603,11 +2657,14 @@ jobs:
               run_attempt: ($run_attempt | tonumber),
               recovery_mode: $recovery_mode,
               recovery_source_run_id: (if $recovery_source_run_id == "" then null else ($recovery_source_run_id | tonumber) end),
+              lifecycle_state: $lifecycle_state,
+              validation_result: (if $validation_result == "" then null else $validation_result end),
               base_sha: $base_sha,
               base_branch: $base_branch,
               worker_branch: $worker_branch,
               candidate_origin_run_id: ($candidate_origin_run_id | tonumber),
               candidate_origin_run_attempt: ($candidate_origin_run_attempt | tonumber),
+              candidate_origin_repair_round: ($repair_round | tonumber),
               candidate_artifact_name: $candidate_artifact_name,
               candidate_artifact_id: $candidate_artifact_id,
               candidate_artifact_digest: $candidate_artifact_digest,
@@ -2631,7 +2688,7 @@ jobs:
           <!-- mira-recovery-candidate:v1
           $POINTER_JSON
           -->
-          Mira Worker Recovery pointer · run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT · Candidate `$CANDIDATE_TREE_OID` · Verify $verify_state · Delivery $delivery_state.
+          Mira Worker Recovery pointer · run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT · Candidate `$CANDIDATE_TREE_OID` · repair round $REPAIR_ROUND · $LIFECYCLE_STATE · Verify $verify_state · Delivery $delivery_state.
           EOF
           )"
 
@@ -2646,6 +2703,10 @@ jobs:
     needs:
       - worker_capture
       - verify
+      - initial_repair_outcome
+      - repair_round_1
+      - repair_round_2
+      - lifecycle_handoff
       - delivery
       - recovery_index
     if: ${{ always() && needs.worker_capture.result != 'skipped' }}

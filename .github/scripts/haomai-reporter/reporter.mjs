@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 
 const INGEST_URL = "https://how-am-i.dangjingtao.workers.dev/v1/events";
-const STAGES = ["worker_capture", "verify", "delivery", "recovery_index"];
+const STAGES = ["worker_capture", "verify", "delivery", "recovery_index", "lifecycle_handoff"];
 const allowedConclusion = new Set(["success", "failure", "cancelled", "skipped", "timed_out", "action_required"]);
 
 function requirePositiveInt(value, label) {
@@ -78,10 +78,22 @@ export function createBatch(input) {
   const verifyResult = result("verify");
   const deliveryResult = result("delivery");
   const recoveryResult = result("recovery_index");
+  const lifecycleResult = result("lifecycle_handoff");
   const outputs = needs.worker_capture?.outputs || {};
   const verifyOutputs = needs.verify?.outputs || {};
   const deliveryOutputs = needs.delivery?.outputs || {};
+  const lifecycleOutputs = needs.lifecycle_handoff?.outputs || {};
+  const initialRepairOutputs = needs.initial_repair_outcome?.outputs || {};
+  const repair1Outputs = needs.repair_round_1?.outputs || {};
+  const repair2Outputs = needs.repair_round_2?.outputs || {};
   const recoveryMode = outputs.recovery_mode || "";
+  const repairAware = lifecycleResult === "success" &&
+    ["VERIFIED", "BLOCKED", "ESCALATED", "DELIVERED"].includes(lifecycleOutputs.state);
+  const repairRoundErrorCode = (round) => {
+    if (String(round) === "1") return "VALIDATION_REPAIR_ROUND_1";
+    if (String(round) === "2") return "VALIDATION_REPAIR_ROUND_2";
+    return "VALIDATION_REPAIR_ROUND_UNKNOWN";
+  };
   const events = [];
   const add = (kind, stage, outcome, level = "info", evidence = runEvidence(id), code) => {
     events.push(reportedEvent(id, kind, stage, outcome, level, evidence, code));
@@ -92,18 +104,65 @@ export function createBatch(input) {
     add("worker.failed", "capture", "failure", "error", runEvidence(id), "WORKER_JOB_FAILED");
   }
 
-  const candidate = evidenceArtifact(artifacts, outputs.candidate_artifact_name, outputs.candidate_artifact_id);
+  const currentCandidateName = repairAware
+    ? lifecycleOutputs.candidate_artifact_name
+    : outputs.candidate_artifact_name;
+  const currentCandidateId = repairAware
+    ? lifecycleOutputs.candidate_artifact_id
+    : outputs.candidate_artifact_id;
+  const candidate = evidenceArtifact(artifacts, currentCandidateName, currentCandidateId);
   if (candidate) {
     add("candidate.captured", "capture", "captured", "info", {
       type: "artifact",
       id: String(candidate.id),
     });
-  } else if (workerResult === "success") {
+  } else if (workerResult === "success" || repairAware) {
     add("candidate.unavailable", "capture", "unavailable", "warn", runEvidence(id), "CANDIDATE_EVIDENCE_MISSING");
   }
 
+  const repairCandidateEvidence = (roundOutputs, fallback = runEvidence(id)) => {
+    const artifact = evidenceArtifact(
+      artifacts,
+      roundOutputs.candidate_artifact_name,
+      roundOutputs.candidate_artifact_id,
+    );
+    return artifact ? { type: "artifact", id: String(artifact.id) } : fallback;
+  };
+
+  if (repairAware) {
+    if (initialRepairOutputs.state === "RETURNED") {
+      add("recovery.detected", "repair", "returned", "warn",
+        evidenceArtifact(artifacts, outputs.candidate_artifact_name, outputs.candidate_artifact_id)
+          ? { type: "artifact", id: String(outputs.candidate_artifact_id) }
+          : runEvidence(id),
+        repairRoundErrorCode(initialRepairOutputs.next_repair_round));
+    }
+    if (repair1Outputs.state === "RETURNED") {
+      add("recovery.detected", "repair", "returned", "warn",
+        repairCandidateEvidence(repair1Outputs),
+        repairRoundErrorCode(repair1Outputs.next_repair_round));
+    }
+    if (repair2Outputs.state === "ESCALATED" || lifecycleOutputs.state === "ESCALATED") {
+      add("recovery.failed", "repair", "escalated", "warn",
+        repairCandidateEvidence(repair2Outputs),
+        "REPAIR_ROUND_LIMIT_EXHAUSTED");
+    } else if (lifecycleOutputs.state === "BLOCKED") {
+      const validationResult = lifecycleOutputs.validation_result;
+      add("recovery.failed", "repair", "blocked", "warn", runEvidence(id),
+        validationResult === "VALIDATION_GAP" ? "VALIDATION_GAP_REQUIRES_MAINTAINER" : "REPAIR_BLOCKED");
+    }
+  }
+
   let verifyEvidence = false;
-  if (verifyResult === "success") {
+  if (repairAware) {
+    const selectedVerify = lifecycleOutputs.verification_artifact_name;
+    verifyEvidence = lifecycleOutputs.validation_result === "PASS" &&
+      lifecycleOutputs.verification_terminal_status === "success" &&
+      artifactByName(artifacts, selectedVerify);
+    if (verifyEvidence && ["VERIFIED", "DELIVERED"].includes(lifecycleOutputs.state)) {
+      add("verify.passed", "verify", "success");
+    }
+  } else if (verifyResult === "success") {
     verifyEvidence = artifactByName(artifacts, verifyOutputs.verification_artifact_name);
     if (verifyEvidence) add("verify.passed", "verify", "success");
   } else if (verifyResult === "failure" || verifyResult === "timed_out") {
@@ -137,7 +196,9 @@ export function createBatch(input) {
     (verified || recoveryMode === "delivery_complete");
   const alreadyDelivered = recoveryMode === "delivery_complete" && workerResult === "success" &&
     Number.isSafeInteger(prNumber) && prNumber > 0;
-  const failed = [workerResult, verifyResult, deliveryResult, recoveryResult]
+  const lifecycleStopped = repairAware &&
+    (lifecycleOutputs.state === "BLOCKED" || lifecycleOutputs.state === "ESCALATED");
+  const failed = lifecycleStopped || [workerResult, verifyResult, deliveryResult, recoveryResult]
     .some((s) => s === "failure" || s === "timed_out");
   let overall = "partial";
   if (successfulDelivery || alreadyDelivered) overall = "success";

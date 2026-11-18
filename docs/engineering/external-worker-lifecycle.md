@@ -23,6 +23,7 @@ Do not duplicate one decision across several documents.
 | Lifecycle / role semantics | This document |
 | Test layers and promotion semantics | [Organization Testing Standard](testing-standard.md) |
 | Validation Profile / tier / result contract | [External Worker Validation Profiles](external-worker-validation.md) |
+| Bounded Return-to-Worker / repair state machine | [External Worker Bounded Return-to-Worker](external-worker-repair.md) |
 | Evidence package / artifact boundaries | [External Worker Evidence Package](../governance/external-worker-evidence.md) |
 | Candidate cross-run recovery | [External Worker Candidate Recovery](../governance/external-worker-recovery.md) |
 | Provider/model route selection | [External Worker Provider and Model](../governance/external-worker-provider-model.md) |
@@ -51,8 +52,13 @@ immutable Candidate Artifact
   v
 clean-room Verify
   |
-  +-- failure --> recoverable evidence / later continuation
+  +-- REPAIR --> bounded repair Worker (round 1, then at most round 2)
+  |                  |
+  |                  +--> new Candidate --> clean-room Verify
   |
+  +-- BLOCKED / VALIDATION_GAP --> stop for maintainer/contract disposition
+  |
+  +-- PASS
   v
 Delivery
   |
@@ -66,10 +72,13 @@ trusted_reporter observes the trusted stage facts independently
 and may publish bounded stage events to 号脉.
 ```
 
-The physical GitHub Actions jobs currently include:
+The physical GitHub Actions topology currently includes:
 
 - `worker_capture`;
-- `verify`;
+- initial `verify`;
+- `initial_repair_outcome`;
+- up to two nested repair workflow calls (`repair_round_1`, `repair_round_2`), each with isolated repair Worker + clean Verify + outcome stages;
+- `lifecycle_handoff`, the single selector for the current Candidate generation;
 - `delivery`;
 - `recovery_index`;
 - `trusted_reporter`.
@@ -122,7 +131,7 @@ Verify supports two validation modes after Candidate identity:
 
 The profile schema, fail-fast ladder, cost ceiling and `PASS / REPAIR / BLOCKED / VALIDATION_GAP` report contract are owned by [External Worker Validation Profiles](external-worker-validation.md).
 
-A non-PASS result preserves evidence and prevents Delivery. It is not proof that useful Worker code disappeared.
+A non-PASS result preserves evidence and prevents Delivery. `REPAIR` enters the bounded Return-to-Worker contract; `BLOCKED` and `VALIDATION_GAP` stop automatic model execution. It is not proof that useful Worker code disappeared.
 
 ### Delivery
 
@@ -161,7 +170,10 @@ It must not create a second Issue/Run ledger or redefine the Worker lifecycle.
 Current pipeline behavior distinguishes at least:
 
 - Worker/Capture failure;
-- Verify non-PASS (`REPAIR`, `BLOCKED`, or `VALIDATION_GAP`);
+- Verify `REPAIR` returned to Worker;
+- repair round 1 / repair round 2 Candidate generations;
+- `BLOCKED` / `VALIDATION_GAP`;
+- exhausted repair budget → `ESCALATED`;
 - Delivery failure;
 - recovery failure;
 - delivery-only retry;
@@ -183,15 +195,17 @@ GitHub-hosted runner/platform ceilings remain external limits and are outside th
 
 Do not reintroduce 30/45/60-minute values as a universal "kill the Worker" policy without a new contract and evidence.
 
-## 6. Planned extensions — not current runtime
+## 6. Bounded Return-to-Worker
 
-The following approved work items describe future behavior. They must not be written as already implemented until their acceptance evidence exists.
+[AGT-068](https://github.com/uichat-mira/.github/issues/85) is implemented by the current repair lifecycle. Its authoritative repair semantics live in [External Worker Bounded Return-to-Worker](external-worker-repair.md).
 
-### AGT-068 — Return-to-Worker
+A structured `REPAIR` may automatically re-enter a Worker at most twice. Each round restores the current Candidate plus trusted structured Validation evidence, produces a new Candidate generation, and uses an independent clean Verify Runner. A third `REPAIR` becomes `ESCALATED` with no third automatic model call.
 
-[AGT-068](https://github.com/uichat-mira/.github/issues/85) owns the planned bounded Return-to-Worker repair loop.
+The same repair budget persists through Recovery and cannot be reset by a later dispatch.
 
-Until it lands, a Verify failure can be recovered by a later dispatch using Candidate + trusted verification evidence, but the current reusable workflow does not automatically return the rejected Candidate to a Worker inside one repair lifecycle.
+## 7. Planned extensions — not current runtime
+
+The following approved work items remain future behavior. They must not be written as already implemented until their acceptance evidence exists.
 
 ### OPS-032 — Factory TV real projection
 
@@ -203,7 +217,7 @@ Factory TV's current UI/demo data must not be described as live telemetry.
 
 True in-run Live Reporter remains a separately accepted extension. Stage Reporter facts must not be relabeled as heartbeat/tool-stream evidence.
 
-## 7. Historical design note
+## 8. Historical design note
 
 [PR #69](https://github.com/uichat-mira/.github/pull/69) recorded the original Worker v2 design proposal before Candidate, clean-room Verify, Delivery, Recovery and Trusted Reporter evolved into the current main-branch workflow.
 

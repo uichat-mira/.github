@@ -16,7 +16,7 @@ Each run that leaves a durable Candidate publishes one machine-readable pointer 
 -->
 ```
 
-The pointer is an index only. It records the pointer run and Candidate-origin run separately, artifact ID/name/digest, exact base and base branch, deterministic Worker branch, Candidate patch/tree identity, contract fingerprint, ambiguity guard, provider provenance, Verify state and Delivery state. Recovery must still download and validate the underlying Candidate/evidence before reuse.
+The pointer is an index only. It records the pointer run and Candidate-origin run separately, Candidate repair generation, lifecycle state/result projection, artifact ID/name/digest, exact base and base branch, deterministic Worker branch, Candidate patch/tree identity, contract fingerprint, ambiguity guard, provider provenance, Verify state and Delivery state. Recovery must still download and validate the underlying Candidate/evidence before reuse.
 
 Only pointers authored by `github-actions[bot]` are trusted. User-authored comments that imitate the marker are ignored.
 
@@ -73,10 +73,11 @@ The machine state distinguishes:
 
 - `fresh` — no prior trusted Candidate pointer exists;
 - `recoverable` — same contract, Candidate identity valid, prior Candidate restored for continued Worker execution;
-- `contract_drift` — prior Candidate exists but current contract fingerprint/ambiguity guard differs; old Candidate is not restored and the Worker starts from the current explicit base with drift recorded;
+- `contract_drift` — prior Candidate exists but current contract fingerprint/ambiguity guard differs; automatic model execution stops for maintainer/contract review rather than silently starting from zero;
 - `recovery_failed` — prior history exists but Artifact/evidence/identity/base restoration cannot be trusted; model execution is blocked;
 - `delivery_retry_only` — prior Verify passed for the exact Candidate but Delivery did not complete; Worker/provider setup and Verify are skipped and only trusted Delivery is retried;
-- `delivery_complete` — prior Candidate is already recorded as successfully delivered; the new run exits as a successful no-op rather than creating duplicate work.
+- `delivery_complete` — prior Candidate is already recorded as successfully delivered; the new run exits as a successful no-op rather than creating duplicate work;
+- `escalated` — the bounded repair budget is exhausted; later dispatches do not reset it or automatically invoke another model.
 
 A `delivery_complete` no-op returns the original Candidate branch and Draft PR URL to the reusable-workflow caller. It does not expose the fresh temporary branch created during enrollment, re-run Verify/Delivery, or publish a duplicate Recovery pointer.
 
@@ -110,12 +111,17 @@ If the prior Candidate reached Verify and Verify failed, the next Worker receive
 
 Prior Worker narration remains diagnostic only and never becomes trusted PASS evidence.
 
-For structured AGT-067 Verify evidence, Recovery also honors the Validation result instead of collapsing every non-PASS into code repair:
+For structured Validation evidence, Recovery honors the Validation result and the persisted repair generation instead of collapsing every non-PASS into code repair:
 
-- `REPAIR` remains recoverable and may continue the prior Candidate on a later dispatch;
+- `REPAIR` below the automatic repair limit remains recoverable;
+- `REPAIR` on `repair_round=2` becomes `escalated` and does not start another model;
+- persisted lifecycle `BLOCKED` or `ESCALATED` cannot be revived by a later dispatch;
 - `BLOCKED` and `VALIDATION_GAP` fail closed under the same contract and do not start the model again;
-- changing the applicable profile/max-tier/contract produces contract drift first, so a maintainer can deliberately change validation requirements rather than repeatedly redispatching the same blocked contract;
-- historical Verify evidence without `validation_result` preserves the pre-AGT-067 recoverable failure behavior.
+- contract drift stops for maintainer review rather than creating a zero-start Worker;
+- Verify evidence repair round must match the Candidate generation;
+- historical Verify evidence without `validation_result` preserves the pre-AGT-067 compatibility behavior.
+
+The in-run state machine and two-round limit are owned by [External Worker Bounded Return-to-Worker](../engineering/external-worker-repair.md).
 
 ## Delivery-only retry
 

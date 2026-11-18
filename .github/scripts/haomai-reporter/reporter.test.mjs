@@ -33,6 +33,95 @@ function fixture(overrides = {}) {
   };
 }
 
+
+function repairFixture({ escalated = false } = {}) {
+  const f = fixture();
+  const repair1Id = 14000000003;
+  const repair2Id = 14000000004;
+  f.needs.initial_repair_outcome = { result: "success", outputs: { state: "RETURNED", next_repair_round: "1" } };
+  f.needs.repair_round_1 = {
+    result: "success",
+    outputs: escalated
+      ? {
+          state: "RETURNED",
+          repair_round: "1",
+          next_repair_round: "2",
+          candidate_artifact_id: String(repair1Id),
+          candidate_artifact_name: "candidate-r1",
+          verification_artifact_name: "verify-r1",
+          validation_result: "REPAIR",
+          verification_terminal_status: "failure",
+        }
+      : {
+          state: "VERIFIED",
+          repair_round: "1",
+          candidate_artifact_id: String(repair1Id),
+          candidate_artifact_name: "candidate-r1",
+          verification_artifact_name: "verify-r1",
+          validation_result: "PASS",
+          verification_terminal_status: "success",
+        },
+  };
+  f.needs.repair_round_2 = escalated
+    ? {
+        result: "success",
+        outputs: {
+          state: "ESCALATED",
+          repair_round: "2",
+          candidate_artifact_id: String(repair2Id),
+          candidate_artifact_name: "candidate-r2",
+          verification_artifact_name: "verify-r2",
+          validation_result: "REPAIR",
+          verification_terminal_status: "failure",
+        },
+      }
+    : { result: "skipped", outputs: {} };
+  f.needs.lifecycle_handoff = {
+    result: "success",
+    outputs: escalated
+      ? {
+          state: "ESCALATED",
+          repair_round: "2",
+          candidate_artifact_id: String(repair2Id),
+          candidate_artifact_name: "candidate-r2",
+          verification_artifact_name: "verify-r2",
+          validation_result: "REPAIR",
+          verification_terminal_status: "failure",
+        }
+      : {
+          state: "VERIFIED",
+          repair_round: "1",
+          candidate_artifact_id: String(repair1Id),
+          candidate_artifact_name: "candidate-r1",
+          verification_artifact_name: "verify-r1",
+          validation_result: "PASS",
+          verification_terminal_status: "success",
+        },
+  };
+  if (escalated) {
+    f.needs.delivery = { result: "skipped", outputs: {} };
+    f.deliveryPrNumber = null;
+  }
+  f.jobs.push({
+    name: "worker / lifecycle_handoff",
+    status: "completed",
+    conclusion: "success",
+  });
+  f.artifacts.push(
+    { id: repair1Id, name: "candidate-r1", expired: false },
+    { id: 14000000005, name: "verify-r1", expired: false },
+  );
+  if (escalated) {
+    f.artifacts.push(
+      { id: repair2Id, name: "candidate-r2", expired: false },
+      { id: 14000000006, name: "verify-r2", expired: false },
+    );
+    const deliveryJob = f.jobs.find((job) => job.name.endsWith("/ delivery"));
+    deliveryJob.conclusion = "skipped";
+  }
+  return f;
+}
+
 test("emits supported trusted stage events only with matching GitHub evidence", () => {
   const batch = createBatch(fixture());
   assert.equal(batch.schema, "haomai.telemetry.v1");
@@ -75,6 +164,69 @@ test("failed capture with durable Candidate is reported as failure, not PASS", (
   assert.ok(batch.events.some((e) => e.kind === "worker.failed"));
   assert.ok(batch.events.some((e) => e.kind === "candidate.captured"));
   assert.ok(!batch.events.some((e) => e.kind === "verify.passed"));
+  assert.equal(batch.events.at(-1).outcome, "failure");
+});
+
+
+test("repair-aware Reporter projects returned round and only final trusted PASS", () => {
+  const batch = createBatch(repairFixture());
+  const kinds = batch.events.map((e) => e.kind);
+  assert.equal(kinds.filter((kind) => kind === "verify.passed").length, 1);
+  assert.ok(batch.events.some((e) =>
+    e.kind === "recovery.detected" &&
+    e.stage === "repair" &&
+    e.outcome === "returned" &&
+    e.error_code === "VALIDATION_REPAIR_ROUND_1"
+  ));
+  const candidate = batch.events.find((e) => e.kind === "candidate.captured");
+  assert.equal(candidate.evidence_ref.id, "14000000003");
+  assert.equal(batch.events.at(-1).outcome, "success");
+});
+
+test("cross-run recovered REPAIR reports the actual remaining round", () => {
+  const f = repairFixture();
+  f.needs.initial_repair_outcome.outputs.next_repair_round = "2";
+  f.needs.repair_round_1.outputs.repair_round = "2";
+  f.needs.lifecycle_handoff.outputs.repair_round = "2";
+  const batch = createBatch(f);
+  const returned = batch.events.filter((e) =>
+    e.kind === "recovery.detected" && e.stage === "repair" && e.outcome === "returned"
+  );
+  assert.equal(returned.length, 1);
+  assert.equal(returned[0].error_code, "VALIDATION_REPAIR_ROUND_2");
+  assert.ok(!batch.events.some((e) => e.error_code === "VALIDATION_REPAIR_ROUND_1"));
+});
+
+test("two failed repair rounds project escalation and never fake verify PASS", () => {
+  const batch = createBatch(repairFixture({ escalated: true }));
+  assert.ok(!batch.events.some((e) => e.kind === "verify.passed"));
+  assert.equal(
+    batch.events.filter((e) => e.kind === "recovery.detected" && e.stage === "repair").length,
+    2,
+  );
+  assert.ok(batch.events.some((e) =>
+    e.kind === "recovery.failed" &&
+    e.stage === "repair" &&
+    e.outcome === "escalated" &&
+    e.error_code === "REPAIR_ROUND_LIMIT_EXHAUSTED"
+  ));
+  assert.equal(batch.events.at(-1).outcome, "failure");
+});
+
+test("initial Verify job success with structured non-PASS does not become verify.passed", () => {
+  const f = repairFixture();
+  f.needs.lifecycle_handoff.outputs.state = "BLOCKED";
+  f.needs.lifecycle_handoff.outputs.validation_result = "BLOCKED";
+  f.needs.lifecycle_handoff.outputs.verification_terminal_status = "failure";
+  f.needs.delivery = { result: "skipped", outputs: {} };
+  f.deliveryPrNumber = null;
+  const deliveryJob = f.jobs.find((job) => job.name.endsWith("/ delivery"));
+  deliveryJob.conclusion = "skipped";
+  const batch = createBatch(f);
+  assert.ok(!batch.events.some((e) => e.kind === "verify.passed"));
+  assert.ok(batch.events.some((e) =>
+    e.kind === "recovery.failed" && e.stage === "repair" && e.outcome === "blocked"
+  ));
   assert.equal(batch.events.at(-1).outcome, "failure");
 });
 
