@@ -263,18 +263,45 @@ def run_validation(args: argparse.Namespace) -> int:
     profile_state = "not_requested"
     profile_sha256 = None
 
+    if mode == "profile":
+        try:
+            max_tier = validate_max_tier(max_tier)
+        except ValidationError as exc:
+            overall = "BLOCKED"
+            gaps.append({
+                "kind": "invalid_dispatch_contract",
+                "tier": None,
+                "required": True,
+                "message": str(exc),
+            })
+
     if overall == "PASS":
-        rc, duration_ms, truncated = _run_command("git diff --check", repo, log_path, "L1 candidate_diff")
-        checks.append(_check_record(
-            cid="candidate_diff", tier="L1", requirement="required",
-            command="git diff --check", status=("passed" if rc == 0 else "failed"),
-            duration_ms=duration_ms, exit_code=rc,
-            reason=("validation log truncated" if truncated else None),
-            failure_result=("REPAIR" if rc != 0 else None),
-        ))
-        if rc != 0:
-            overall = "REPAIR"
-            failed_check = "candidate_diff"
+        if mode == "profile" and TIER_INDEX["L1"] > TIER_INDEX[max_tier]:
+            checks.append(_check_record(
+                cid="candidate_diff", tier="L1", requirement="required",
+                command="git diff --check", status="skipped",
+                reason=f"dispatch max tier is {max_tier}",
+            ))
+            gaps.append({
+                "kind": "required_tier_above_dispatch_ceiling",
+                "tier": "L1",
+                "required": True,
+                "check_id": "candidate_diff",
+                "message": f"required built-in check 'candidate_diff' at L1 exceeds dispatch max tier {max_tier}",
+            })
+            overall = "VALIDATION_GAP"
+        else:
+            rc, duration_ms, truncated = _run_command("git diff --check", repo, log_path, "L1 candidate_diff")
+            checks.append(_check_record(
+                cid="candidate_diff", tier="L1", requirement="required",
+                command="git diff --check", status=("passed" if rc == 0 else "failed"),
+                duration_ms=duration_ms, exit_code=rc,
+                reason=("validation log truncated" if truncated else None),
+                failure_result=("REPAIR" if rc != 0 else None),
+            ))
+            if rc != 0:
+                overall = "REPAIR"
+                failed_check = "candidate_diff"
 
     if overall == "PASS":
         if mode == "legacy":
@@ -304,17 +331,6 @@ def run_validation(args: argparse.Namespace) -> int:
                     overall = "REPAIR"
                     failed_check = "legacy_verification_command"
         else:
-            try:
-                max_tier = validate_max_tier(max_tier)
-            except ValidationError as exc:
-                overall = "BLOCKED"
-                gaps.append({
-                    "kind": "invalid_dispatch_contract",
-                    "tier": None,
-                    "required": True,
-                    "message": str(exc),
-                })
-                max_tier = args.max_tier
             if overall == "PASS":
                 if not PROFILE_RE.fullmatch(profile_name):
                     profile, profile_state, errors = None, "profile_invalid", ["invalid validation profile identifier"]
