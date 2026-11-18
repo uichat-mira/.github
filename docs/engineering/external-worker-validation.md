@@ -165,7 +165,7 @@ Only `PASS` authorizes ordinary Delivery.
 
 A report is evidence, not Issue acceptance.
 
-Recovery preserves the distinction: `REPAIR` may continue the Candidate; `BLOCKED` and `VALIDATION_GAP` do not automatically invoke another model under the same validation contract. AGT-068 will own the future in-lifecycle Return-to-Worker loop.
+The bounded repair lifecycle preserves the distinction: `REPAIR` may enter [Return-to-Worker](external-worker-repair.md); `BLOCKED` and `VALIDATION_GAP` do not automatically invoke another model under the same validation contract. The repair lifecycle may not reinterpret these results from raw logs.
 
 ## 7. Legacy compatibility
 
@@ -194,7 +194,7 @@ Legacy callers retain the existing verification-command hash contract during mig
 
 This contract does not:
 
-- implement Return-to-Worker; AGT-068 owns that loop;
+- own Return-to-Worker state or repair-round limits; [External Worker Bounded Return-to-Worker](external-worker-repair.md) owns that loop;
 - choose tests for a repository;
 - reinterpret T1–T5;
 - automatically run full Desktop packaging, device checks, T4/T5, release or production smoke;
