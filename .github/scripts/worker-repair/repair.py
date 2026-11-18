@@ -117,9 +117,13 @@ def _safe_issue(raw: Any) -> dict[str, Any]:
     return {"number": number, "title": title, "body": body}
 
 
-def _safe_amendments(raw: Any) -> list[dict[str, Any]]:
+def _safe_amendments(raw_contract: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_contract, dict):
+        raise RepairError("Recovery contract snapshot must be an object")
+    canonical = raw_contract.get("canonical_contract")
+    raw = canonical.get("trusted_amendments") if isinstance(canonical, dict) else None
     if not isinstance(raw, list):
-        raise RepairError("trusted amendments snapshot must be an array")
+        raise RepairError("Recovery contract trusted amendments must be an array")
     if len(raw) > MAX_AMENDMENTS:
         raise RepairError(f"trusted amendments exceed {MAX_AMENDMENTS}")
     out: list[dict[str, Any]] = []
@@ -133,7 +137,9 @@ def _safe_amendments(raw: Any) -> list[dict[str, Any]]:
             body = body[:MAX_AMENDMENT_BODY_CHARS] + "\n[amendment truncated]"
         out.append({
             "id": item.get("id"),
-            "author": item.get("author"),
+            "author": item.get("author") or (
+                item.get("user", {}).get("login") if isinstance(item.get("user"), dict) else None
+            ),
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
             "body": body,
@@ -196,6 +202,7 @@ def _safe_validation(raw: Any) -> dict[str, Any]:
                 "exit_code",
                 "reason",
                 "failure_result",
+                "command",
             )
         })
     safe_gaps = []
@@ -225,7 +232,7 @@ def context(args: argparse.Namespace) -> int:
         raise RepairError(f"repair round must be 1-{MAX_REPAIR_ROUNDS}")
 
     issue = _safe_issue(load_json(args.issue_json))
-    amendments = _safe_amendments(load_json(args.amendments_json))
+    amendments = _safe_amendments(load_json(args.contract_json))
     candidate = _safe_candidate(
         load_json(args.candidate_manifest),
         expected_round=repair_round - 1,
@@ -276,7 +283,7 @@ def parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("context")
     c.add_argument("--issue-json", required=True)
-    c.add_argument("--amendments-json", required=True)
+    c.add_argument("--contract-json", required=True)
     c.add_argument("--candidate-manifest", required=True)
     c.add_argument("--validation-report", required=True)
     c.add_argument("--validation-artifact-name", required=True)
