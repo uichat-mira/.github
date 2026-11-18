@@ -932,7 +932,7 @@ jobs:
             "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
           test -s "${root}/trusted-candidate.py"
-          echo "candidate_tool_commit=c5d93e149765f9068f3d342d2aed3a40a8f20efc" >> "${root}/identity.txt"
+          echo "candidate_tool_commit=${{ job.workflow_sha }}" >> "${root}/identity.txt"
 
           candidate_dir="${root}/candidate"
           status_file="${root}/candidate-status.json"
