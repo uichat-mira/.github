@@ -218,6 +218,50 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(report["result"], "PASS")
             self.assertTrue(marker.exists())
 
+    def test_missing_profile_is_dispatch_gap_before_model(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile_path = write_profile(root, {"other": {"checks": []}})
+            args = Args()
+            args.profile_file = str(profile_path)
+            args.profile = "missing"
+            args.max_tier = "L3"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract.json")
+            MODULE.contract(args)
+            contract = json.loads(Path(args.output).read_text())
+            self.assertEqual(contract["result"], "VALIDATION_GAP")
+            self.assertEqual(contract["profile_state"], "profile_missing")
+
+    def test_invalid_dispatch_tier_is_blocked_before_model(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile_path = write_profile(root, {"feature": {"checks": []}})
+            args = Args()
+            args.profile_file = str(profile_path)
+            args.profile = "feature"
+            args.max_tier = "L99"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract.json")
+            MODULE.contract(args)
+            contract = json.loads(Path(args.output).read_text())
+            self.assertEqual(contract["result"], "BLOCKED")
+            self.assertEqual(contract["profile_state"], "invalid_dispatch_contract")
+
+    def test_empty_legacy_contract_is_dispatch_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_repo(root)
+            args = Args()
+            args.profile_file = str(root / "missing.json")
+            args.profile = ""
+            args.max_tier = "L3"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract.json")
+            MODULE.contract(args)
+            contract = json.loads(Path(args.output).read_text())
+            self.assertEqual(contract["result"], "VALIDATION_GAP")
+
     def test_profile_description_does_not_change_contract_identity(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
