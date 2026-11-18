@@ -95,7 +95,8 @@ maintainer_amendments="$(jq -r '
   end
 ' "${RUNNER_TEMP}/mira-worker/maintainer-comments.json")"
 org_policy="$(cat "${RUNNER_TEMP}/mira-worker/org-AGENTS.md")"
-context_file="${WORKER_CONTEXT_FILE:-${RUNNER_TEMP}/mira-worker/recovery-context.txt}"\ncontinuation_context="$(cat "$context_file" 2>/dev/null || printf '%s\\n' 'No continuation context.')"
+context_file="${WORKER_CONTEXT_FILE:-${RUNNER_TEMP}/mira-worker/recovery-context.txt}"
+continuation_context="$(cat "$context_file" 2>/dev/null || printf '%s\\n' 'No continuation context.')"
 
 cat > "${RUNNER_TEMP}/mira-worker/prompt.txt" <<PROMPT
 You are the implementation Worker for exactly one explicitly authorized Mira engineering work item.
