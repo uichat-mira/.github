@@ -10,7 +10,16 @@ import sys
 from typing import Any
 
 VALIDATION_RESULTS = {"PASS", "REPAIR", "BLOCKED", "VALIDATION_GAP"}
-PRECONDITIONS = {"ok", "contract_drift", "identity_mismatch", "security", "permission", "corrupted_identity"}
+PRECONDITIONS = {
+    "ok",
+    "contract_drift",
+    "identity_mismatch",
+    "security",
+    "permission",
+    "corrupted_identity",
+    "worker_failure",
+    "verify_infrastructure",
+}
 MAX_REPAIR_ROUNDS = 2
 MAX_CONTEXT_BYTES = 64 * 1024
 MAX_ISSUE_BODY_CHARS = 20_000
