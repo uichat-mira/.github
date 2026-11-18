@@ -1,0 +1,32 @@
+name: Mira External Worker Contract Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/worker-validation/**'
+      - '.github/scripts/worker-candidate/recovery.py'
+      - '.github/scripts/worker-candidate/test_recovery_validation_contract.py'
+      - '.github/workflows/mira-external-worker.yml'
+      - '.github/workflows/external-worker-contract-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Compile trusted Python helpers
+        run: |
+          python3 -m py_compile             .github/scripts/worker-validation/validation.py             .github/scripts/worker-validation/test_validation.py             .github/scripts/worker-candidate/recovery.py             .github/scripts/worker-candidate/test_recovery_validation_contract.py
+
+      - name: Run Validation Profile fixtures
+        run: python3 .github/scripts/worker-validation/test_validation.py -v
+
+      - name: Run Recovery compatibility fixtures
+        run: python3 .github/scripts/worker-candidate/test_recovery_validation_contract.py -v

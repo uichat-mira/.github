@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+SCRIPT = Path(__file__).with_name("validation.py")
+SPEC = importlib.util.spec_from_file_location("mira_validation", SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+SPEC.loader.exec_module(MODULE)
+
+
+class Args:
+    pass
+
+
+def init_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+
+def write_profile(root: Path, profiles: dict) -> Path:
+    init_repo(root)
+    path = root / "profiles.json"
+    path.write_text(json.dumps({"schema_version": 1, "profiles": profiles}), encoding="utf-8")
+    return path
+
+
+def run_validation(root: Path, profile_file: Path, *, profile="feature", max_tier="L3", legacy_command="", restore_outcome="success"):
+    if not (root / ".git").exists():
+        init_repo(root)
+    args = Args()
+    args.repo = str(root)
+    args.profile_file = str(profile_file)
+    args.profile = profile
+    args.max_tier = max_tier
+    args.legacy_command = legacy_command
+    args.restore_outcome = restore_outcome
+    args.output = str(root / ".git" / "report.json")
+    args.log = str(root / ".git" / "validation.log")
+    rc = MODULE.run_validation(args)
+    return rc, json.loads(Path(args.output).read_text())
+
+
+class ValidationTests(unittest.TestCase):
+    def test_l1_detects_staged_candidate_whitespace(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_repo(root)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Validation Test"], check=True)
+            tracked = root / "tracked.txt"
+            tracked.write_text("clean\n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
+            profile = root / "profiles.json"
+            profile.write_text(json.dumps({"schema_version": 1, "profiles": {"feature": {"checks": []}}}))
+            tracked.write_text("bad trailing whitespace   \n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+
+            _, report = run_validation(root, profile, max_tier="L1")
+            self.assertEqual(report["result"], "REPAIR")
+            self.assertEqual(report["profile_state"], "available")
+            self.assertIsNotNone(report["profile_sha256"])
+            diff = next(x for x in report["checks"] if x["id"] == "candidate_diff")
+            self.assertEqual(diff["status"], "failed")
+            self.assertNotEqual(diff["exit_code"], 0)
+
+    def test_l0_ceiling_runs_identity_only_and_reports_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / ".git" / "ran"
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "unit", "tier": "L2", "requirement": "required", "command": f"touch {marker}"}
+                ]}
+            })
+            _, report = run_validation(root, profile, max_tier="L0")
+            self.assertEqual(report["result"], "VALIDATION_GAP")
+            self.assertFalse(marker.exists())
+            diff = next(x for x in report["checks"] if x["id"] == "candidate_diff")
+            self.assertEqual(diff["status"], "skipped")
+            self.assertEqual(diff["tier"], "L1")
+
+    def test_required_check_can_classify_blocked(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "environment", "tier": "L2", "requirement": "required", "command": "exit 3", "failure_result": "BLOCKED"}
+                ]}
+            })
+            _, report = run_validation(root, profile)
+            self.assertEqual(report["result"], "BLOCKED")
+            self.assertEqual(report["failed_check"], "environment")
+
+    def test_profile_pass_respects_max_tier_without_running_l4(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / ".git" / "l4-ran"
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"},
+                    {"id": "package", "tier": "L4", "requirement": "optional", "command": f"touch {marker}"},
+                ]}
+            })
+            _, report = run_validation(root, profile, max_tier="L2")
+            self.assertEqual(report["result"], "PASS")
+            self.assertFalse(marker.exists())
+            self.assertEqual(next(x for x in report["checks"] if x["id"] == "package")["status"], "skipped")
+
+    def test_fail_fast_stops_later_expensive_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / ".git" / "l4-ran"
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "unit", "tier": "L2", "requirement": "required", "command": "exit 2"},
+                    {"id": "package", "tier": "L4", "requirement": "required", "command": f"touch {marker}"},
+                ]}
+            })
+            _, report = run_validation(root, profile, max_tier="L4")
+            self.assertEqual(report["result"], "REPAIR")
+            self.assertFalse(marker.exists())
+            package = next(x for x in report["checks"] if x["id"] == "package")
+            self.assertEqual(package["status"], "skipped")
+            self.assertIn("fail-fast", package["reason"])
+
+    def test_required_check_above_ceiling_is_gap_not_upgrade(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / ".git" / "l4-ran"
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"},
+                    {"id": "package", "tier": "L4", "requirement": "required", "command": f"touch {marker}"},
+                ]}
+            })
+            _, report = run_validation(root, profile, max_tier="L2")
+            self.assertEqual(report["result"], "VALIDATION_GAP")
+            self.assertFalse(marker.exists())
+            self.assertEqual(report["gaps"][0]["kind"], "required_tier_above_dispatch_ceiling")
+
+    def test_unknown_profile_is_explicit_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {"other": {"checks": []}})
+            _, report = run_validation(root, profile, profile="missing")
+            self.assertEqual(report["result"], "VALIDATION_GAP")
+            self.assertEqual(report["profile_state"], "profile_missing")
+
+    def test_unavailable_required_capability_is_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "missing", "tier": "L2", "requirement": "required", "command": "definitely-not-a-real-command-agt067"},
+                ]}
+            })
+            _, report = run_validation(root, profile)
+            self.assertEqual(report["result"], "VALIDATION_GAP")
+            self.assertEqual(report["gaps"][0]["kind"], "capability_unavailable")
+
+    def test_profile_command_cannot_mutate_candidate_and_still_pass(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "mutator", "tier": "L2", "requirement": "required", "command": "printf changed > generated.txt"}
+                ]}
+            })
+            _, report = run_validation(root, profile)
+            self.assertEqual(report["result"], "BLOCKED")
+            check = next(x for x in report["checks"] if x["id"] == "mutator")
+            self.assertEqual(check["status"], "mutated_candidate")
+
+    def test_explicit_l4_runs_only_when_ceiling_allows_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / ".git" / "l4-ran"
+            profile = write_profile(root, {
+                "release-candidate": {"checks": [
+                    {"id": "package", "tier": "L4", "requirement": "required", "command": f"touch {marker}"},
+                ]}
+            })
+            _, report = run_validation(root, profile, profile="release-candidate", max_tier="L4")
+            self.assertEqual(report["result"], "PASS")
+            self.assertTrue(marker.exists())
+
+    def test_legacy_command_keeps_exact_compatibility_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / "legacy-ran"
+            command = f"printf legacy > {marker}"
+            _, report = run_validation(root, root / "missing.json", profile="", legacy_command=command)
+            self.assertEqual(report["mode"], "legacy")
+            self.assertEqual(report["result"], "PASS")
+            self.assertEqual(marker.read_text(), "legacy")
+            check = next(x for x in report["checks"] if x["id"] == "legacy_verification_command")
+            self.assertEqual(check["command"], command)
+            self.assertEqual(check["tier"], "legacy-unclassified")
+
+    def test_legacy_mode_ignores_new_tier_input(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / "legacy-ran"
+            command = f"touch {marker}"
+            _, report = run_validation(
+                root,
+                root / "missing.json",
+                profile="",
+                max_tier="NOT-A-TIER",
+                legacy_command=command,
+            )
+            self.assertEqual(report["result"], "PASS")
+            self.assertTrue(marker.exists())
+
+    def test_missing_profile_is_dispatch_gap_before_model(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile_path = write_profile(root, {"other": {"checks": []}})
+            args = Args()
+            args.profile_file = str(profile_path)
+            args.profile = "missing"
+            args.max_tier = "L3"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract.json")
+            MODULE.contract(args)
+            contract = json.loads(Path(args.output).read_text())
+            self.assertEqual(contract["result"], "VALIDATION_GAP")
+            self.assertEqual(contract["profile_state"], "profile_missing")
+
+    def test_invalid_dispatch_tier_is_blocked_before_model(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile_path = write_profile(root, {"feature": {"checks": []}})
+            args = Args()
+            args.profile_file = str(profile_path)
+            args.profile = "feature"
+            args.max_tier = "L99"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract.json")
+            MODULE.contract(args)
+            contract = json.loads(Path(args.output).read_text())
+            self.assertEqual(contract["result"], "BLOCKED")
+            self.assertEqual(contract["profile_state"], "invalid_dispatch_contract")
+
+    def test_empty_legacy_contract_is_dispatch_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_repo(root)
+            args = Args()
+            args.profile_file = str(root / "missing.json")
+            args.profile = ""
+            args.max_tier = "L3"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract.json")
+            MODULE.contract(args)
+            contract = json.loads(Path(args.output).read_text())
+            self.assertEqual(contract["result"], "VALIDATION_GAP")
+
+    def test_profile_description_does_not_change_contract_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile_path = write_profile(root, {
+                "feature": {
+                    "description": "first wording",
+                    "checks": [
+                        {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"}
+                    ],
+                }
+            })
+            args = Args()
+            args.profile_file = str(profile_path)
+            args.profile = "feature"
+            args.max_tier = "L3"
+            args.legacy_command = ""
+            args.output = str(root / ".git" / "contract-a.json")
+            MODULE.contract(args)
+            first = json.loads(Path(args.output).read_text())
+
+            profile_path.write_text(json.dumps({
+                "schema_version": 1,
+                "profiles": {
+                    "feature": {
+                        "description": "different human wording",
+                        "checks": [
+                            {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"}
+                        ],
+                    }
+                },
+            }))
+            args.output = str(root / ".git" / "contract-b.json")
+            MODULE.contract(args)
+            second = json.loads(Path(args.output).read_text())
+
+            self.assertEqual(first["profile_sha256"], second["profile_sha256"])
+            self.assertEqual(first["contract_sha256"], second["contract_sha256"])
+
+    def test_invalid_profile_schema_becomes_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "bad", "tier": "L2", "requirement": "required"}
+                ]}
+            })
+            _, report = run_validation(root, profile)
+            self.assertEqual(report["result"], "VALIDATION_GAP")
+            self.assertEqual(report["profile_state"], "profile_invalid")
+
+    def test_restore_failure_is_blocked_and_runs_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            marker = root / "ran"
+            profile = write_profile(root, {
+                "feature": {"checks": [
+                    {"id": "unit", "tier": "L2", "requirement": "required", "command": f"touch {marker}"}
+                ]}
+            })
+            _, report = run_validation(root, profile, restore_outcome="failure")
+            self.assertEqual(report["result"], "BLOCKED")
+            self.assertFalse(marker.exists())
+            self.assertEqual(report["failed_check"], "candidate_identity")
+
+
+if __name__ == "__main__":
+    unittest.main()

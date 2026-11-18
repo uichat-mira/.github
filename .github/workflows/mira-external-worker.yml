@@ -12,9 +12,20 @@ on:
         required: true
         type: string
       verification_command:
-        description: Trusted repository-owned verification command
-        required: true
+        description: Legacy trusted repository-owned verification command; used only when validation_profile is empty
+        required: false
         type: string
+        default: ''
+      validation_profile:
+        description: Repository-owned Validation Profile name from .github/mira-validation-profiles.json
+        required: false
+        type: string
+        default: ''
+      validation_max_tier:
+        description: Hard ceiling for profile-mode validation (L0-L5); never upgrades itself
+        required: false
+        type: string
+        default: L3
       timeout_minutes:
         description: Advisory Worker planning budget (minutes); never used as a hard termination timeout
         required: false
@@ -229,6 +240,8 @@ jobs:
           CURRENT_BASE_SHA: ${{ steps.identity.outputs.base_sha }}
           BASE_BRANCH: ${{ inputs.base_branch }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
         run: |
           set -euo pipefail
 
@@ -237,19 +250,42 @@ jobs:
           mkdir -p "$recovery_root"
 
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
-            "https://raw.githubusercontent.com/uichat-mira/.github/4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-candidate/recovery.py" \
             -o "${root}/trusted-recovery.py"
           /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
             -o "${root}/trusted-candidate.py"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
+            -o "${root}/trusted-validation.py"
           test -s "${root}/trusted-recovery.py"
           test -s "${root}/trusted-candidate.py"
+          test -s "${root}/trusted-validation.py"
+
+          profile_file="${root}/validation-profiles.json"
+          rm -f "$profile_file"
+          if test -n "$VALIDATION_PROFILE" && git cat-file -e "${CURRENT_BASE_SHA}:.github/mira-validation-profiles.json" 2>/dev/null; then
+            git show "${CURRENT_BASE_SHA}:.github/mira-validation-profiles.json" > "$profile_file"
+          fi
+
+          python3 "${root}/trusted-validation.py" contract \
+            --profile-file "$profile_file" \
+            --profile "$VALIDATION_PROFILE" \
+            --max-tier "$VALIDATION_MAX_TIER" \
+            --legacy-command "$VERIFICATION_COMMAND" \
+            --output "${root}/validation-contract.json"
+
+          validation_contract_sha256="$(jq -r '.contract_sha256' "${root}/validation-contract.json")"
+          test -n "$validation_contract_sha256"
 
           python3 "${root}/trusted-recovery.py" fingerprint \
             --issue-json "${root}/issue.json" \
             --comments-json "${root}/maintainer-comments.json" \
             --base-branch "$BASE_BRANCH" \
             --verification-command "$VERIFICATION_COMMAND" \
+            --validation-profile "$VALIDATION_PROFILE" \
+            --validation-max-tier "$VALIDATION_MAX_TIER" \
+            --validation-contract-sha256 "$validation_contract_sha256" \
             --output "${root}/contract.json"
 
           current_fingerprint="$(jq -r '.fingerprint' "${root}/contract.json")"
@@ -602,6 +638,21 @@ jobs:
             echo "run_worker=$run_worker"
             echo "source_run_id=$source_run_id"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Enforce Validation dispatch contract before model execution
+        id: validation_dispatch
+        if: ${{ steps.recovery.outputs.run_worker == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract="${RUNNER_TEMP}/mira-worker/validation-contract.json"
+          test -s "$contract"
+          result="$(jq -r '.result // "BLOCKED"' "$contract")"
+          if test "$result" != "PASS"; then
+            echo "::error::Validation dispatch contract is not runnable: $result." >&2
+            cat "$contract" >&2
+            exit 1
+          fi
 
       - name: Enforce Recovery fail-closed boundary
         id: recovery_gate
@@ -1303,7 +1354,8 @@ jobs:
             exit 1
           fi
 
-          git diff --check
+          # Mechanical Candidate hygiene belongs to trusted Validation L1.
+          # Capture happens first so a repairable defect does not erase useful work.
 
       - name: Re-publish verified Candidate for Delivery-only retry
         id: recovered_candidate_upload
@@ -1325,6 +1377,8 @@ jobs:
           name: mira-external-worker-verify-recovered-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/mira-worker/recovery/verify/verify-run.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/validation-report.json
+            ${{ runner.temp }}/mira-worker/recovery/verify/validation.log
             ${{ runner.temp }}/mira-worker/recovery/verify/verification.log
             ${{ runner.temp }}/mira-worker/recovery/verify/verification-meta.json
             ${{ runner.temp }}/mira-worker/recovery/verify/restore-result.json
@@ -1505,6 +1559,8 @@ jobs:
           CANDIDATE_ORIGIN_RUN_ID: ${{ steps.handoff.outputs.candidate_origin_run_id }}
           CANDIDATE_ORIGIN_RUN_ATTEMPT: ${{ steps.handoff.outputs.candidate_origin_run_attempt }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
           REQUESTED_PROVIDER: ${{ inputs.provider }}
           FREE_MODE: ${{ inputs.free_mode }}
           REQUESTED_MODEL: ${{ inputs.model }}
@@ -1531,6 +1587,7 @@ jobs:
           RECOVERY_SOURCE_RUN_ID: ${{ steps.handoff.outputs.recovery_source_run_id }}
           RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
           RECOVERY_GATE_OUTCOME: ${{ steps.recovery_gate.outcome }}
+          VALIDATION_DISPATCH_OUTCOME: ${{ steps.validation_dispatch.outcome }}
           CANDIDATE_ARTIFACT_NAME: ${{ steps.handoff.outputs.candidate_artifact_name }}
           CANDIDATE_ARTIFACT_ID: ${{ steps.handoff.outputs.candidate_artifact_id }}
           CANDIDATE_ARTIFACT_DIGEST: ${{ steps.handoff.outputs.candidate_artifact_digest }}
@@ -1570,6 +1627,7 @@ jobs:
               ("identity", os.getenv("IDENTITY_OUTCOME")),
               ("recovery", os.getenv("RECOVERY_OUTCOME")),
               ("recovery_gate", os.getenv("RECOVERY_GATE_OUTCOME")),
+              ("validation_dispatch", os.getenv("VALIDATION_DISPATCH_OUTCOME")),
               ("provider", os.getenv("PROVIDER_OUTCOME")),
               ("policy", os.getenv("POLICY_OUTCOME")),
               ("install", os.getenv("INSTALL_OUTCOME")),
@@ -1706,7 +1764,18 @@ jobs:
               },
               "recovery": recovery,
               "candidate": candidate,
-              "verification": {"command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000], "outcome": "pending_clean_room_verify"},
+              "verification": {
+                  "mode": "profile" if os.getenv("VALIDATION_PROFILE") else "legacy",
+                  "profile": os.getenv("VALIDATION_PROFILE") or None,
+                  "max_tier": os.getenv("VALIDATION_MAX_TIER") if os.getenv("VALIDATION_PROFILE") else None,
+                  "legacy_command": (os.getenv("VERIFICATION_COMMAND") or "")[:4000] if not os.getenv("VALIDATION_PROFILE") else None,
+                  "contract": (
+                      json.loads((root / "validation-contract.json").read_text())
+                      if (root / "validation-contract.json").exists()
+                      else None
+                  ),
+                  "outcome": "pending_clean_room_verify",
+              },
               "delivery": {"outcome": "pending_verified_candidate"},
               "artifact_retention_days": 14,
               "safety": {
@@ -1734,6 +1803,7 @@ jobs:
             ${{ runner.temp }}/mira-worker/maintainer-comments.json
             ${{ runner.temp }}/mira-worker/provider-route.json
             ${{ runner.temp }}/mira-worker/contract.json
+            ${{ runner.temp }}/mira-worker/validation-contract.json
             ${{ runner.temp }}/mira-worker/recovery-state.json
             ${{ runner.temp }}/mira-worker/recovery-context.txt
             ${{ runner.temp }}/mira-worker/recovery/discovery.json
@@ -1765,6 +1835,7 @@ jobs:
       contract_fingerprint: ${{ steps.restore.outputs.contract_fingerprint }}
       verification_artifact_name: ${{ steps.verify_meta.outputs.artifact_name }}
       terminal_status: ${{ steps.verify_meta.outputs.terminal_status }}
+      validation_result: ${{ steps.verify_meta.outputs.validation_result }}
 
     steps:
       - name: Checkout exact Candidate base
@@ -1801,6 +1872,26 @@ jobs:
             "https://raw.githubusercontent.com/uichat-mira/.github/c5d93e149765f9068f3d342d2aed3a40a8f20efc/.github/scripts/worker-candidate/candidate.py" \
             -o "$root/trusted-candidate.py"
           test -s "$root/trusted-candidate.py"
+
+      - name: Load trusted Validation primitive and base-owned profile
+        id: validation_tool
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.worker_capture.outputs.candidate_base_sha }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mira-verify"
+          /usr/bin/curl -fsSL --retry 2 --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/${{ job.workflow_repository }}/${{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" \
+            -o "$root/trusted-validation.py"
+          test -s "$root/trusted-validation.py"
+
+          profile_file="$root/validation-profiles.json"
+          rm -f "$profile_file"
+          if test -n "$VALIDATION_PROFILE" && git cat-file -e "${BASE_SHA}:.github/mira-validation-profiles.json" 2>/dev/null; then
+            git show "${BASE_SHA}:.github/mira-validation-profiles.json" > "$profile_file"
+          fi
 
       - name: Restore exact Candidate in clean Runner
         id: restore
@@ -1842,48 +1933,46 @@ jobs:
             echo "contract_fingerprint=$contract_fingerprint"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check restored Candidate diff
-        id: diff_check
-        if: ${{ steps.restore.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --check
-
-      - name: Run trusted repository verification
-        id: verify_command
-        if: ${{ steps.restore.outcome == 'success' && steps.diff_check.outcome == 'success' }}
-        continue-on-error: true
+      - name: Run trusted Validation ladder
+        id: validation
+        if: ${{ always() && steps.validation_tool.outcome == 'success' }}
         shell: bash
         env:
-          MIRA_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          RESTORE_OUTCOME: ${{ steps.restore.outcome }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
+          LEGACY_VERIFICATION_COMMAND: ${{ inputs.verification_command }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-verify"
-          test -n "${MIRA_VERIFICATION_COMMAND}"
+          profile_file="$root/validation-profiles.json"
 
-          set +e
-          {
-            echo "$ ${MIRA_VERIFICATION_COMMAND}"
-            bash -lc "${MIRA_VERIFICATION_COMMAND}"
-          } 2>&1 | tee "$root/verification.raw"
-          verification_rc="${PIPESTATUS[0]}"
-          set -e
+          python3 "$root/trusted-validation.py" run \
+            --repo "$GITHUB_WORKSPACE" \
+            --profile-file "$profile_file" \
+            --profile "$VALIDATION_PROFILE" \
+            --max-tier "$VALIDATION_MAX_TIER" \
+            --legacy-command "$LEGACY_VERIFICATION_COMMAND" \
+            --restore-outcome "$RESTORE_OUTCOME" \
+            --output "$root/validation-report.json" \
+            --log "$root/validation.log"
 
+          cp "$root/validation.log" "$root/verification.log"
           python3 - <<'PY'
-          from pathlib import Path
           import json, os
+          from pathlib import Path
           root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
-          src = root / "verification.raw"
-          dst = root / "verification.log"
-          limit = 120_000
-          data = src.read_bytes() if src.exists() else b""
-          truncated = len(data) > limit
-          dst.write_bytes(data[:limit] + (b"\n[truncated]\n" if truncated else b""))
-          (root / "verification-meta.json").write_text(json.dumps({"bytes": len(data), "limit_bytes": limit, "truncated": truncated}) + "\n")
+          report = json.loads((root / "validation-report.json").read_text())
+          (root / "verification-meta.json").write_text(json.dumps({
+              "schema_version": 1,
+              "mode": report.get("mode"),
+              "profile": report.get("profile"),
+              "max_tier": report.get("max_tier"),
+              "validation_result": report.get("result"),
+              "bytes": (root / "verification.log").stat().st_size if (root / "verification.log").exists() else 0,
+              "limit_bytes": report.get("log", {}).get("max_bytes", 120000),
+          }, indent=2, sort_keys=True) + "\n")
           PY
-
-          exit "$verification_rc"
 
       - name: Finalize Verify evidence
         id: verify_meta
@@ -1895,8 +1984,9 @@ jobs:
           EXPECTED_TREE_OID: ${{ needs.worker_capture.outputs.candidate_tree_oid }}
           EXPECTED_CONTRACT_FINGERPRINT: ${{ needs.worker_capture.outputs.contract_fingerprint }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
-          DIFF_CHECK_OUTCOME: ${{ steps.diff_check.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify_command.outcome }}
+          VALIDATION_STEP_OUTCOME: ${{ steps.validation.outcome }}
+          REQUESTED_PROFILE: ${{ inputs.validation_profile }}
+          REQUESTED_MAX_TIER: ${{ inputs.validation_max_tier }}
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mira-verify"
@@ -1908,10 +1998,48 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          ok = os.getenv("RESTORE_OUTCOME") == "success" and os.getenv("DIFF_CHECK_OUTCOME") == "success" and os.getenv("VERIFY_OUTCOME") == "success"
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
+          report_path = root / "validation-report.json"
+          if report_path.exists():
+              try:
+                  report = json.loads(report_path.read_text())
+              except Exception:
+                  report = None
+          else:
+              report = None
+
+          if not isinstance(report, dict):
+              report = {
+                  "schema_version": 1,
+                  "mode": "profile" if os.getenv("REQUESTED_PROFILE") else "legacy",
+                  "profile": os.getenv("REQUESTED_PROFILE") or None,
+                  "max_tier": os.getenv("REQUESTED_MAX_TIER") if os.getenv("REQUESTED_PROFILE") else None,
+                  "profile_state": "unavailable",
+                  "profile_sha256": None,
+                  "result": "BLOCKED",
+                  "failed_check": "validation_runtime",
+                  "checks": [],
+                  "gaps": [{
+                      "kind": "validation_runtime_unavailable",
+                      "required": True,
+                      "message": "trusted Validation step did not produce a readable report",
+                  }],
+              }
+              report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+          validation_result = report.get("result") or "BLOCKED"
+          ok = os.getenv("RESTORE_OUTCOME") == "success" and validation_result == "PASS"
           print("terminal_status=" + ("success" if ok else "failure"), file=open(os.environ["GITHUB_OUTPUT"], "a"))
+          print("validation_result=" + validation_result, file=open(os.environ["GITHUB_OUTPUT"], "a"))
+
+          diff_check = next((x for x in report.get("checks", []) if x.get("id") == "candidate_diff"), None)
+          diff_status = "skipped"
+          if isinstance(diff_check, dict):
+              diff_status = "success" if diff_check.get("status") == "passed" else "failure"
+
           payload = {
-              "schema_version": 1,
+              "schema_version": 2,
               "job_role": "verify",
               "repository": os.getenv("GITHUB_REPOSITORY"),
               "run_id": os.getenv("GITHUB_RUN_ID"),
@@ -1920,10 +2048,20 @@ jobs:
               "candidate_patch_sha256": os.getenv("EXPECTED_PATCH_SHA256"),
               "candidate_tree_oid": os.getenv("EXPECTED_TREE_OID"),
               "contract_fingerprint": os.getenv("EXPECTED_CONTRACT_FINGERPRINT"),
+              "validation_result": validation_result,
+              "validation": {
+                  "mode": report.get("mode"),
+                  "profile": report.get("profile"),
+                  "max_tier": report.get("max_tier"),
+                  "profile_state": report.get("profile_state"),
+                  "profile_sha256": report.get("profile_sha256"),
+                  "failed_check": report.get("failed_check"),
+                  "gaps": report.get("gaps", []),
+              },
               "stages": {
                   "restore": os.getenv("RESTORE_OUTCOME"),
-                  "diff_check": os.getenv("DIFF_CHECK_OUTCOME"),
-                  "trusted_verification": os.getenv("VERIFY_OUTCOME"),
+                  "diff_check": diff_status,
+                  "trusted_verification": "success" if validation_result == "PASS" else "failure",
               },
               "terminal_status": "success" if ok else "failure",
               "verification_artifact": os.getenv("ARTIFACT_NAME"),
@@ -1931,7 +2069,6 @@ jobs:
               "provider_credentials_present": False,
               "github_mutation_authority": False,
           }
-          root = Path(os.environ["RUNNER_TEMP"]) / "mira-verify"
           (root / "verify-run.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
           PY
 
@@ -1943,6 +2080,8 @@ jobs:
           path: |
             ${{ runner.temp }}/mira-verify/verify-run.json
             ${{ runner.temp }}/mira-verify/restore-result.json
+            ${{ runner.temp }}/mira-verify/validation-report.json
+            ${{ runner.temp }}/mira-verify/validation.log
             ${{ runner.temp }}/mira-verify/verification.log
             ${{ runner.temp }}/mira-verify/verification-meta.json
           if-no-files-found: warn
@@ -1953,13 +2092,11 @@ jobs:
         shell: bash
         env:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
-          DIFF_CHECK_OUTCOME: ${{ steps.diff_check.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify_command.outcome }}
+          VALIDATION_RESULT: ${{ steps.verify_meta.outputs.validation_result }}
         run: |
           set -euo pipefail
           test "$RESTORE_OUTCOME" = "success"
-          test "$DIFF_CHECK_OUTCOME" = "success"
-          test "$VERIFY_OUTCOME" = "success"
+          test "$VALIDATION_RESULT" = "PASS"
 
   delivery:
     needs:
@@ -2176,6 +2313,8 @@ jobs:
           MODEL_ROUTE: ${{ needs.worker_capture.outputs.model_route }}
           OPENCODE_VERSION: ${{ inputs.free_mode && '2.0.24' || '1.18.34' }}
           VERIFICATION_COMMAND: ${{ inputs.verification_command }}
+          VALIDATION_PROFILE: ${{ inputs.validation_profile }}
+          VALIDATION_MAX_TIER: ${{ inputs.validation_max_tier }}
           CANDIDATE_PATCH_SHA256: ${{ steps.verified_handoff.outputs.candidate_patch_sha256 }}
           CANDIDATE_TREE_OID: ${{ steps.verified_handoff.outputs.candidate_tree_oid }}
         run: |
@@ -2193,6 +2332,19 @@ jobs:
           verify_path = root / "verify" / "verification.log"
           worker_output = worker_path.read_text(errors="replace")[:12000] if worker_path.exists() else "(Delivery-only retry: model was not rerun.)"
           verification_output = verify_path.read_text(errors="replace")[:12000] if verify_path.exists() else "(Prior trusted Verify evidence reused.)"
+          validation_path = root / "verify" / "validation-report.json"
+          validation = {}
+          if validation_path.exists():
+              try:
+                  import json
+                  validation = json.loads(validation_path.read_text())
+              except Exception:
+                  validation = {}
+
+          if os.environ.get("VALIDATION_PROFILE"):
+              validation_identity = f"profile `{os.environ['VALIDATION_PROFILE']}` · max `{os.environ['VALIDATION_MAX_TIER']}`"
+          else:
+              validation_identity = f"legacy command `{os.environ['VERIFICATION_COMMAND']}`"
 
           body = f"""## Mira external Worker handoff
 
@@ -2207,8 +2359,8 @@ jobs:
           - Model route: `{os.environ["MODEL_ROUTE"]}`
           - Candidate patch: `{os.environ["CANDIDATE_PATCH_SHA256"]}`
           - Candidate tree: `{os.environ["CANDIDATE_TREE_OID"]}`
-          - Verification: PASS (clean Runner)
-          - Verification command: `{os.environ["VERIFICATION_COMMAND"]}`
+          - Validation: `{validation.get("result", "PASS")}` (clean Runner)
+          - Validation contract: {validation_identity}
 
           This PR is intentionally **Draft**. Worker execution and Delivery do not grant merge, Issue acceptance/closure, environment promotion, release, or deployment authority.
 

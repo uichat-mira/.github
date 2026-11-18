@@ -22,6 +22,7 @@ Do not duplicate one decision across several documents.
 | Current executable pipeline | `.github/workflows/mira-external-worker.yml` and pinned scripts |
 | Lifecycle / role semantics | This document |
 | Test layers and promotion semantics | [Organization Testing Standard](testing-standard.md) |
+| Validation Profile / tier / result contract | [External Worker Validation Profiles](external-worker-validation.md) |
 | Evidence package / artifact boundaries | [External Worker Evidence Package](../governance/external-worker-evidence.md) |
 | Candidate cross-run recovery | [External Worker Candidate Recovery](../governance/external-worker-recovery.md) |
 | Provider/model route selection | [External Worker Provider and Model](../governance/external-worker-provider-model.md) |
@@ -114,9 +115,14 @@ Verify runs on a separate clean GitHub-hosted runner.
 
 It restores the exact Candidate against its bound base and checks Candidate identity before running caller/repository-owned verification.
 
-Current implementation still uses the caller's bounded `verification_command` after identity and diff checks. It does **not yet** implement the planned tiered Validation Profile contract from AGT-067.
+Verify supports two validation modes after Candidate identity:
 
-A Verify failure preserves evidence and prevents Delivery. It is not proof that useful Worker code disappeared.
+- profile mode uses the repository-owned Validation Profile and a hard maximum tier;
+- legacy mode preserves the caller's existing `verification_command` during migration.
+
+The profile schema, fail-fast ladder, cost ceiling and `PASS / REPAIR / BLOCKED / VALIDATION_GAP` report contract are owned by [External Worker Validation Profiles](external-worker-validation.md).
+
+A non-PASS result preserves evidence and prevents Delivery. It is not proof that useful Worker code disappeared.
 
 ### Delivery
 
@@ -155,7 +161,7 @@ It must not create a second Issue/Run ledger or redefine the Worker lifecycle.
 Current pipeline behavior distinguishes at least:
 
 - Worker/Capture failure;
-- Verify failure;
+- Verify non-PASS (`REPAIR`, `BLOCKED`, or `VALIDATION_GAP`);
 - Delivery failure;
 - recovery failure;
 - delivery-only retry;
@@ -180,12 +186,6 @@ Do not reintroduce 30/45/60-minute values as a universal "kill the Worker" polic
 ## 6. Planned extensions — not current runtime
 
 The following approved work items describe future behavior. They must not be written as already implemented until their acceptance evidence exists.
-
-### AGT-067 — tiered Validation
-
-[AGT-067](https://github.com/uichat-mira/.github/issues/84) owns the planned repository-owned Validation Profile / tier / cost-boundary contract and structured Validation Report.
-
-Until it lands, the current Verify contract remains Candidate identity + diff check + caller `verification_command`.
 
 ### AGT-068 — Return-to-Worker
 

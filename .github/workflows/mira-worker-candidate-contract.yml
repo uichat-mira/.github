@@ -77,6 +77,12 @@ jobs:
           assert "candidate_base_sha" in worker
           assert "--base-branch \"$BASE_BRANCH\"" in worker
           assert "--verification-command \"$VERIFICATION_COMMAND\"" in worker
+          assert "--validation-profile \"$VALIDATION_PROFILE\"" in worker
+          assert "--validation-max-tier \"$VALIDATION_MAX_TIER\"" in worker
+          assert "validation-contract.json" in worker
+          assert "Enforce Validation dispatch contract before model execution" in worker
+          assert worker.index("Enforce Validation dispatch contract before model execution") < worker.index("Resolve run-scoped Worker provider route")
+          assert "VALIDATION_DISPATCH_OUTCOME" in worker
           assert "candidate_artifact_identity_mismatch_or_expired" in worker
           assert "candidate_exact_restore_failed" in worker
           assert "Report already delivered Candidate" in worker
@@ -95,7 +101,9 @@ jobs:
           assert "Checkout exact Candidate base" in verify
           assert "Download immutable Candidate" in verify
           assert "Restore exact Candidate in clean Runner" in verify
-          assert "Run trusted repository verification" in verify
+          assert "Run trusted Validation ladder" in verify
+          assert "validation-report.json" in verify
+          assert "validation_result" in verify
           assert "Require verified Candidate" in verify
 
           assert "needs:\n      - worker_capture\n      - verify" in delivery
@@ -148,7 +156,8 @@ jobs:
           assert "mira-recovery-candidate:v1" in recovery_index
           assert "invalid_latest_pointer" in worker
           assert "latest_recovery_pointer_invalid" in worker
-          assert "4215f8079a81cb251ff42c83216deddc95cfb4b8/.github/scripts/worker-candidate/recovery.py" in worker
+          assert "https://raw.githubusercontent.com/" + "$" + "{{ job.workflow_repository }}/" + "$" + "{{ job.workflow_sha }}/.github/scripts/worker-candidate/recovery.py" in worker
+          assert "https://raw.githubusercontent.com/" + "$" + "{{ job.workflow_repository }}/" + "$" + "{{ job.workflow_sha }}/.github/scripts/worker-validation/validation.py" in worker
           assert "candidate_origin_run_id" in recovery_index
           assert "candidate_artifact_id" in recovery_index
           assert "normalize_artifact_digest" in worker
@@ -157,6 +166,9 @@ jobs:
           assert 'recovered_candidate_digest="$(normalize_artifact_digest' in worker
           assert "contract_fingerprint" in recovery_index
           assert "ambiguity_guard" in recovery_index
+          assert "git diff --check" not in worker[worker.index("Require a bounded implementation change"):worker.index("Re-publish verified Candidate for Delivery-only retry")]
+          assert "validation_profile:" in workflow
+          assert "validation_max_tier:" in workflow
           PY
 
   fixture-worker-capture:
