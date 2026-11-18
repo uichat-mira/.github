@@ -123,9 +123,10 @@ jobs:
           assert '--completed-rounds "$COMPLETED_REPAIR_ROUNDS"' in decision
           assert "needs.worker_capture.outputs.candidate_repair_round" in decision
           assert "state == 'RETURNED'" in repair1
-          assert "repair_round: $" + "{{ fromJSON(needs.initial_repair_outcome.outputs.next_repair_round) }}" in repair1
+          expr_open = "$" + "{{"
+          assert "repair_round: " + expr_open + " fromJSON(needs.initial_repair_outcome.outputs.next_repair_round) }}" in repair1
           assert "state == 'RETURNED'" in repair2
-          assert "repair_round: $" + "{{ fromJSON(needs.repair_round_1.outputs.next_repair_round) }}" in repair2
+          assert "repair_round: " + expr_open + " fromJSON(needs.repair_round_1.outputs.next_repair_round) }}" in repair2
           assert "repair_round_3:" not in workflow
           assert workflow.count("uses: ./.github/workflows/mira-external-worker-repair.yml") == 2
 
@@ -155,7 +156,7 @@ jobs:
           assert "id: verify_upload" in repair_verify
           assert "id: require_evidence" in repair_verify
           assert "VERIFY_UPLOAD_OUTCOME" in repair_verify
-          assert "evidence_status: ${{ steps.require_evidence.outputs.evidence_status }}" in repair_verify
+          assert "evidence_status: " + expr_open + " steps.require_evidence.outputs.evidence_status }}" in repair_verify
           assert "provider_api_key" not in repair_verify
           assert "opencode_go_api_key" not in repair_verify
           assert "secrets." not in repair_verify
