@@ -77,14 +77,18 @@ class RepairTests(unittest.TestCase):
                 "body": "Return repairable Validation failures.",
                 "private_reasoning": "must-not-survive",
             }
-            amendments = [{
-                "id": 7,
-                "author": "maintainer",
-                "created_at": "2026-11-18T00:00:00Z",
-                "updated_at": "2026-11-18T00:00:00Z",
-                "body": "Scope change: keep the repair bounded.",
-                "token": "must-not-survive",
-            }]
+            contract = {
+                "canonical_contract": {
+                    "trusted_amendments": [{
+                        "id": 7,
+                        "author": "maintainer",
+                        "created_at": "2026-11-18T00:00:00Z",
+                        "updated_at": "2026-11-18T00:00:00Z",
+                        "body": "Scope change: keep the repair bounded.",
+                        "token": "must-not-survive",
+                    }]
+                }
+            }
             candidate = {
                 "schema_version": 1,
                 "repository": "uichat-mira/demo",
@@ -128,7 +132,7 @@ class RepairTests(unittest.TestCase):
             paths = {}
             for name, value in {
                 "issue": issue,
-                "amendments": amendments,
+                "contract": contract,
                 "candidate": candidate,
                 "validation": validation,
             }.items():
@@ -138,7 +142,7 @@ class RepairTests(unittest.TestCase):
             output = root / "context.json"
             args = Args()
             args.issue_json = str(paths["issue"])
-            args.amendments_json = str(paths["amendments"])
+            args.contract_json = str(paths["contract"])
             args.candidate_manifest = str(paths["candidate"])
             args.validation_report = str(paths["validation"])
             args.validation_artifact_name = "verify-artifact"
@@ -165,11 +169,12 @@ class RepairTests(unittest.TestCase):
                 "repair_round": 0,
             }
             validation = {"schema_version": 1, "result": "REPAIR", "checks": [], "gaps": []}
-            for name, value in {"issue": issue, "amendments": [], "candidate": candidate, "validation": validation}.items():
+            contract = {"canonical_contract": {"trusted_amendments": []}}
+            for name, value in {"issue": issue, "contract": contract, "candidate": candidate, "validation": validation}.items():
                 (root / f"{name}.json").write_text(json.dumps(value))
             args = Args()
             args.issue_json = str(root / "issue.json")
-            args.amendments_json = str(root / "amendments.json")
+            args.contract_json = str(root / "contract.json")
             args.candidate_manifest = str(root / "candidate.json")
             args.validation_report = str(root / "validation.json")
             args.validation_artifact_name = "verify-artifact"
