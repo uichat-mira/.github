@@ -564,7 +564,8 @@ def main() -> None:
         )
         drift = json.loads(drift_path.read_text())
         assert drift["mode"] == "contract_drift"
-        assert drift["run_worker"] is True
+        assert drift["run_worker"] is False
+        assert drift["reuse_candidate"] is False
         assert drift["reuse_candidate"] is False
         print("PASS decision: contract drift forbids silent reuse")
 
