@@ -249,16 +249,22 @@ def _run_command(command: str, cwd: str, log_path: Path, label: str) -> tuple[in
     started = time.monotonic()
     header = f"\n## {label}\n$ {command}\n".encode("utf-8")
     truncated = _append_log(log_path, header)
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         ["bash", "-lc", command],
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        check=False,
     )
-    truncated = _append_log(log_path, proc.stdout or b"") or truncated
+    if proc.stdout is None:
+        raise ValidationError("validation command stdout pipe is unavailable")
+    while True:
+        chunk = proc.stdout.read(64 * 1024)
+        if not chunk:
+            break
+        truncated = _append_log(log_path, chunk) or truncated
+    return_code = proc.wait()
     duration_ms = int((time.monotonic() - started) * 1000)
-    return proc.returncode, duration_ms, truncated
+    return return_code, duration_ms, truncated
 
 
 def _check_record(
@@ -316,18 +322,41 @@ def run_validation(args: argparse.Namespace) -> int:
 
     profile_state = "not_requested"
     profile_sha256 = None
+    profile: dict[str, Any] | None = None
 
     if mode == "profile":
+        tier_valid = True
         try:
             max_tier = validate_max_tier(max_tier)
         except ValidationError as exc:
-            overall = "BLOCKED"
+            tier_valid = False
+            profile_state = "invalid_dispatch_contract"
+            if overall == "PASS":
+                overall = "BLOCKED"
             gaps.append({
                 "kind": "invalid_dispatch_contract",
                 "tier": None,
                 "required": True,
                 "message": str(exc),
             })
+
+        if tier_valid:
+            if not PROFILE_RE.fullmatch(profile_name):
+                profile_state = "profile_invalid"
+                profile_errors = ["invalid validation profile identifier"]
+            else:
+                profile, profile_state, profile_errors = selected_profile(args.profile_file, profile_name)
+            profile_sha256 = sha256_json(profile) if profile is not None else None
+            if profile is None:
+                for message in profile_errors:
+                    gaps.append({
+                        "kind": profile_state,
+                        "tier": None,
+                        "required": True,
+                        "message": message,
+                    })
+                if overall == "PASS":
+                    overall = "VALIDATION_GAP"
 
     if overall == "PASS":
         if mode == "profile" and TIER_INDEX["L1"] > TIER_INDEX[max_tier]:
@@ -386,102 +415,88 @@ def run_validation(args: argparse.Namespace) -> int:
                     overall = "REPAIR"
                     failed_check = "legacy_verification_command"
         else:
-            if overall == "PASS":
-                if not PROFILE_RE.fullmatch(profile_name):
-                    profile, profile_state, errors = None, "profile_invalid", ["invalid validation profile identifier"]
-                else:
-                    profile, profile_state, errors = selected_profile(args.profile_file, profile_name)
-                profile_sha256 = sha256_json(profile) if profile is not None else None
-                if profile is None:
-                    overall = "VALIDATION_GAP"
-                    for message in errors:
-                        gaps.append({
-                            "kind": profile_state,
-                            "tier": None,
-                            "required": True,
-                            "message": message,
-                        })
-                else:
-                    for spec in profile["checks"]:
-                        cid = spec["id"]
-                        tier = spec["tier"]
-                        requirement = spec["requirement"]
-                        command = spec["command"]
-                        if requirement == "not_applicable":
-                            checks.append(_check_record(
-                                cid=cid, tier=tier, requirement=requirement,
-                                command=None, status="not_applicable",
-                            ))
-                            continue
-                        if TIER_INDEX[tier] > TIER_INDEX[max_tier]:
-                            checks.append(_check_record(
-                                cid=cid, tier=tier, requirement=requirement,
-                                command=command, status="skipped",
-                                reason=f"dispatch max tier is {max_tier}",
-                            ))
-                            if requirement == "required":
-                                gaps.append({
-                                    "kind": "required_tier_above_dispatch_ceiling",
-                                    "tier": tier,
-                                    "required": True,
-                                    "check_id": cid,
-                                    "message": f"required check {cid!r} at {tier} exceeds dispatch max tier {max_tier}",
-                                })
-                                overall = "VALIDATION_GAP"
-                            continue
-
-                        if overall != "PASS":
-                            checks.append(_check_record(
-                                cid=cid, tier=tier, requirement=requirement,
-                                command=command, status="skipped",
-                                reason=f"fail-fast after {failed_check or overall}",
-                            ))
-                            continue
-
-                        before_state = _candidate_state_digest(repo)
-                        rc, duration_ms, truncated = _run_command(command, repo, log_path, f"{tier} {cid}")
-                        after_state = _candidate_state_digest(repo)
-                        if after_state != before_state:
-                            checks.append(_check_record(
-                                cid=cid, tier=tier, requirement=requirement,
-                                command=command, status="mutated_candidate",
-                                duration_ms=duration_ms, exit_code=rc,
-                                reason="validation command changed tracked or non-ignored Candidate state",
-                                failure_result="BLOCKED",
-                            ))
-                            overall = "BLOCKED"
-                            failed_check = cid
-                            continue
-
-                        if rc == 127:
-                            checks.append(_check_record(
-                                cid=cid, tier=tier, requirement=requirement,
-                                command=command, status="unavailable",
-                                duration_ms=duration_ms, exit_code=rc,
-                                reason="command/capability unavailable (exit 127)",
-                            ))
-                            gaps.append({
-                                "kind": "capability_unavailable",
-                                "tier": tier,
-                                "required": requirement == "required",
-                                "check_id": cid,
-                                "message": f"check {cid!r} could not execute because its capability was unavailable",
-                            })
-                            if requirement == "required":
-                                overall = "VALIDATION_GAP"
-                                failed_check = cid
-                            continue
-
+            if profile is None:
+                raise ValidationError("profile-mode validation reached execution without a resolved profile")
+            for spec in profile["checks"]:
+                    cid = spec["id"]
+                    tier = spec["tier"]
+                    requirement = spec["requirement"]
+                    command = spec["command"]
+                    if requirement == "not_applicable":
                         checks.append(_check_record(
                             cid=cid, tier=tier, requirement=requirement,
-                            command=command, status=("passed" if rc == 0 else "failed"),
-                            duration_ms=duration_ms, exit_code=rc,
-                            reason=("validation log truncated" if truncated else None),
-                            failure_result=(spec["failure_result"] if rc != 0 else None),
+                            command=None, status="not_applicable",
                         ))
-                        if rc != 0 and requirement == "required":
-                            overall = spec["failure_result"]
+                        continue
+                    if TIER_INDEX[tier] > TIER_INDEX[max_tier]:
+                        checks.append(_check_record(
+                            cid=cid, tier=tier, requirement=requirement,
+                            command=command, status="skipped",
+                            reason=f"dispatch max tier is {max_tier}",
+                        ))
+                        if requirement == "required":
+                            gaps.append({
+                                "kind": "required_tier_above_dispatch_ceiling",
+                                "tier": tier,
+                                "required": True,
+                                "check_id": cid,
+                                "message": f"required check {cid!r} at {tier} exceeds dispatch max tier {max_tier}",
+                            })
+                            overall = "VALIDATION_GAP"
+                        continue
+
+                    if overall != "PASS":
+                        checks.append(_check_record(
+                            cid=cid, tier=tier, requirement=requirement,
+                            command=command, status="skipped",
+                            reason=f"fail-fast after {failed_check or overall}",
+                        ))
+                        continue
+
+                    before_state = _candidate_state_digest(repo)
+                    rc, duration_ms, truncated = _run_command(command, repo, log_path, f"{tier} {cid}")
+                    after_state = _candidate_state_digest(repo)
+                    if after_state != before_state:
+                        checks.append(_check_record(
+                            cid=cid, tier=tier, requirement=requirement,
+                            command=command, status="mutated_candidate",
+                            duration_ms=duration_ms, exit_code=rc,
+                            reason="validation command changed tracked or non-ignored Candidate state",
+                            failure_result="BLOCKED",
+                        ))
+                        overall = "BLOCKED"
+                        failed_check = cid
+                        continue
+
+                    if rc == 127:
+                        checks.append(_check_record(
+                            cid=cid, tier=tier, requirement=requirement,
+                            command=command, status="unavailable",
+                            duration_ms=duration_ms, exit_code=rc,
+                            reason="command/capability unavailable (exit 127)",
+                        ))
+                        gaps.append({
+                            "kind": "capability_unavailable",
+                            "tier": tier,
+                            "required": requirement == "required",
+                            "check_id": cid,
+                            "message": f"check {cid!r} could not execute because its capability was unavailable",
+                        })
+                        if requirement == "required":
+                            overall = "VALIDATION_GAP"
                             failed_check = cid
+                        continue
+
+                    checks.append(_check_record(
+                        cid=cid, tier=tier, requirement=requirement,
+                        command=command, status=("passed" if rc == 0 else "failed"),
+                        duration_ms=duration_ms, exit_code=rc,
+                        reason=("validation log truncated" if truncated else None),
+                        failure_result=(spec["failure_result"] if rc != 0 else None),
+                    ))
+                    if rc != 0 and requirement == "required":
+                        overall = spec["failure_result"]
+                        failed_check = cid
 
     report = {
         "schema_version": 1,
