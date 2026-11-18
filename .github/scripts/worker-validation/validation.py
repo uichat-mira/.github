@@ -257,11 +257,12 @@ def _run_command(command: str, cwd: str, log_path: Path, label: str) -> tuple[in
     )
     if proc.stdout is None:
         raise ValidationError("validation command stdout pipe is unavailable")
-    while True:
-        chunk = proc.stdout.read(64 * 1024)
-        if not chunk:
-            break
-        truncated = _append_log(log_path, chunk) or truncated
+    with proc.stdout:
+        while True:
+            chunk = proc.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            truncated = _append_log(log_path, chunk) or truncated
     return_code = proc.wait()
     duration_ms = int((time.monotonic() - started) * 1000)
     return return_code, duration_ms, truncated
