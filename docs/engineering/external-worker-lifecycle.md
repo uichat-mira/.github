@@ -161,7 +161,7 @@ It must not create a second Issue/Run ledger or redefine the Worker lifecycle.
 Current pipeline behavior distinguishes at least:
 
 - Worker/Capture failure;
-- Verify failure;
+- Verify non-PASS (`REPAIR`, `BLOCKED`, or `VALIDATION_GAP`);
 - Delivery failure;
 - recovery failure;
 - delivery-only retry;
