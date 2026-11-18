@@ -431,6 +431,26 @@ def decide(args: argparse.Namespace) -> int:
         dump_json(result, args.output)
         return 0
 
+    lifecycle_state = pointer.get("lifecycle_state")
+    if lifecycle_state == "ESCALATED":
+        result.update(
+            mode="escalated",
+            run_worker=False,
+            reuse_candidate=False,
+            reason="prior_lifecycle_escalated_to_maintainer",
+        )
+        dump_json(result, args.output)
+        return 0
+    if lifecycle_state == "BLOCKED":
+        result.update(
+            mode="recovery_failed",
+            run_worker=False,
+            reuse_candidate=False,
+            reason="prior_lifecycle_blocked_requires_maintainer_review",
+        )
+        dump_json(result, args.output)
+        return 0
+
     verify_state = pointer.get("verification_state") or "skipped"
     delivery_state = pointer.get("delivery_state") or "skipped"
     verify = load_json(args.verify_run) if args.verify_run else None
