@@ -94,7 +94,7 @@ class ValidationTests(unittest.TestCase):
     def test_fail_fast_stops_later_expensive_check(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            marker = root / "l4-ran"
+            marker = root / ".git" / "l4-ran"
             profile = write_profile(root, {
                 "feature": {"checks": [
                     {"id": "unit", "tier": "L2", "requirement": "required", "command": "exit 2"},
@@ -111,7 +111,7 @@ class ValidationTests(unittest.TestCase):
     def test_required_check_above_ceiling_is_gap_not_upgrade(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            marker = root / "l4-ran"
+            marker = root / ".git" / "l4-ran"
             profile = write_profile(root, {
                 "feature": {"checks": [
                     {"id": "unit", "tier": "L2", "requirement": "required", "command": "true"},
@@ -159,7 +159,7 @@ class ValidationTests(unittest.TestCase):
     def test_explicit_l4_runs_only_when_ceiling_allows_it(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            marker = root / "l4-ran"
+            marker = root / ".git" / "l4-ran"
             profile = write_profile(root, {
                 "release-candidate": {"checks": [
                     {"id": "package", "tier": "L4", "requirement": "required", "command": f"touch {marker}"},
