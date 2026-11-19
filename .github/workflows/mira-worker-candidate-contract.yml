@@ -83,7 +83,7 @@ jobs:
           assert "contents: write" not in worker
           assert "pull-requests: write" not in worker
           assert "Discover and prepare Candidate Recovery" in worker
-          assert "delivery_retry_only" in recovery
+          assert "delivery_retry_only" in worker
           assert "candidate_artifact_unavailable_or_expired" in recovery
           assert "base_advanced_clean_3way" in recovery
           assert "base_advanced_3way_conflict" in recovery
@@ -99,7 +99,7 @@ jobs:
           assert 'worker_repair_round="$source_repair_round"' in recovery
           assert 'worker_repair_round="$(jq -r ' in recovery
           assert '.next_repair_round // ""' in recovery
-          assert '--repair-round "$REPAIR_ROUND"' in recovery
+          assert '--repair-round "$REPAIR_ROUND"' in worker
           assert "Capture durable Candidate" in worker
           assert "Commit/push or reuse exact verified Candidate branch" not in worker
           assert "opencode run" not in worker
