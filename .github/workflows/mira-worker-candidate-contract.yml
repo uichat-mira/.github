@@ -51,6 +51,7 @@ jobs:
           workflow = Path(".github/workflows/mira-external-worker.yml").read_text()
           repair = Path(".github/workflows/mira-external-worker-repair.yml").read_text()
           runtime = Path(".github/scripts/worker-runtime/run-worker.sh").read_text()
+          recovery = Path(".github/scripts/worker-runtime/candidate-recovery.sh").read_text()
 
           worker_start = workflow.index("  worker_capture:")
           verify_start = workflow.index("\n  verify:", worker_start)
@@ -83,21 +84,21 @@ jobs:
           assert "pull-requests: write" not in worker
           assert "Discover and prepare Candidate Recovery" in worker
           assert "delivery_retry_only" in worker
-          assert "candidate_artifact_unavailable_or_expired" in worker
-          assert "base_advanced_clean_3way" in worker
-          assert "base_advanced_3way_conflict" in worker
-          assert "validation-contract.json" in worker
+          assert "candidate_artifact_unavailable_or_expired" in recovery
+          assert "base_advanced_clean_3way" in recovery
+          assert "base_advanced_3way_conflict" in recovery
+          assert "validation-contract.json" in recovery
           assert "Enforce Validation dispatch contract before model execution" in worker
           assert worker.index("Enforce Validation dispatch contract before model execution") < worker.index("Resolve run-scoped Worker provider route")
           assert "Load trusted shared Worker runtime" in worker
           assert "trusted-worker-runtime.sh" in worker
           assert 'bash "${RUNNER_TEMP}/mira-worker/trusted-worker-runtime.sh"' in worker
-          assert "trusted-repair.py" in worker
-          assert "structured_repair_context_build_failed" in worker
-          assert '--repair-round "$worker_repair_round"' in worker or '--repair-round "$REPAIR_ROUND"' in worker
-          assert 'worker_repair_round="$source_repair_round"' in worker
-          assert 'worker_repair_round="$(jq -r ' in worker
-          assert '.next_repair_round // ""' in worker
+          assert "trusted-repair.py" in recovery
+          assert "structured_repair_context_build_failed" in recovery
+          assert '--repair-round "$worker_repair_round"' in recovery or '--repair-round "$REPAIR_ROUND"' in recovery
+          assert 'worker_repair_round="$source_repair_round"' in recovery
+          assert 'worker_repair_round="$(jq -r ' in recovery
+          assert '.next_repair_round // ""' in recovery
           assert '--repair-round "$REPAIR_ROUND"' in worker
           assert "Capture durable Candidate" in worker
           assert "Commit/push or reuse exact verified Candidate branch" not in worker
@@ -218,8 +219,13 @@ jobs:
           assert "SOFT_BUDGET_MINUTES: $" + "{{ inputs.timeout_minutes }}" in worker
           assert "NOT a hard deadline" in runtime
           exact = "https://raw.githubusercontent.com/" + "$" + "{{ job.workflow_repository }}/" + "$" + "{{ job.workflow_sha }}"
-          assert exact + "/.github/scripts/worker-candidate/recovery.py" in worker
-          assert exact + "/.github/scripts/worker-validation/validation.py" in worker
+          assert exact + "/.github/scripts/worker-runtime/candidate-recovery.sh" in worker
+          script_root = "https://raw.githubusercontent.com/${TRUSTED_WORKFLOW_REPOSITORY}/${TRUSTED_WORKFLOW_SHA}"
+          assert script_root + "/.github/scripts/worker-candidate/recovery.py" in recovery
+          assert script_root + "/.github/scripts/worker-validation/validation.py" in recovery
+          assert script_root + "/.github/scripts/worker-candidate/candidate.py" in recovery
+          assert script_root + "/.github/scripts/worker-repair/repair.py" in recovery
+          assert "bash \"$root/trusted-candidate-recovery.sh\"" in worker
           assert exact + "/.github/scripts/worker-runtime/run-worker.sh" in worker
           assert exact + "/.github/scripts/worker-repair/repair.py" in repair
           assert exact + "/.github/scripts/worker-candidate/candidate.py" in repair
